@@ -1,0 +1,10 @@
+services:
+  clash-speedtest:
+    restart: unless-stopped
+    image: dev2people/clashsub-tools-clashspeedtest-v0
+    build:
+      dockerfile: build.dockerfile
+    ports:
+      - 18080:8080
+    environment:
+      - AUTH_KEY=tsKEkfwK9OMFGJWf8W8xHs7IocnEQk3T

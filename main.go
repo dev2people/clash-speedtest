@@ -1,17 +1,17 @@
 package main
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/faceair/clash-speedtest/speedtester"
+	"github.com/faceair/clash-speedtest/webserver"
+	"github.com/google/uuid"
 	"github.com/metacubex/mihomo/log"
 	"github.com/olekukonko/tablewriter"
 	"github.com/schollz/progressbar/v3"
@@ -34,6 +34,8 @@ var (
 	minUploadSpeed    = flag.Float64("min-upload-speed", 2, "filter upload speed less than this value(unit: MB/s)")
 	renameNodes       = flag.Bool("rename", false, "rename nodes with IP location and speed")
 	fastMode          = flag.Bool("fast", false, "fast mode, only test latency")
+	webMode           = flag.Bool("web", false, "enable web server mode")
+	webPort           = flag.Int("port", 8080, "web server port (only used in web mode)")
 )
 
 const (
@@ -47,6 +49,20 @@ func main() {
 	flag.Parse()
 	log.SetLevel(log.SILENT)
 
+	// Web 模式
+	if *webMode {
+		server, err := webserver.New(*webPort)
+		if err != nil {
+			log.Fatalln("初始化 Web 服务器失败: %v", err)
+		}
+
+		if err := server.Start(); err != nil {
+			log.Fatalln("启动 Web 服务器失败: %v", err)
+		}
+		return
+	}
+
+	// CLI 模式
 	if *configPathsConfig == "" {
 		log.Fatalln("please specify the configuration file")
 	}
@@ -86,7 +102,7 @@ func main() {
 	printResults(results)
 
 	if *outputPath != "" {
-		err = saveConfig(results)
+		err = saveConfig(results, speedTester)
 		if err != nil {
 			log.Fatalln("save config file failed: %v", err)
 		}
@@ -118,7 +134,6 @@ func printResults(results []*speedtester.Result) {
 		}
 	}
 	table.SetHeader(headers)
-
 	table.SetAutoWrapText(false)
 	table.SetAutoFormatHeaders(true)
 	table.SetHeaderAlignment(tablewriter.ALIGN_LEFT)
@@ -157,7 +172,6 @@ func printResults(results []*speedtester.Result) {
 		} else {
 			latencyStr = colorRed + latencyStr + colorReset
 		}
-
 		jitterStr := result.FormatJitter()
 		if result.Jitter > 0 {
 			if result.Jitter < 800*time.Millisecond {
@@ -170,7 +184,6 @@ func printResults(results []*speedtester.Result) {
 		} else {
 			jitterStr = colorRed + jitterStr + colorReset
 		}
-
 		// 丢包率颜色
 		packetLossStr := result.FormatPacketLoss()
 		if result.PacketLoss < 10 {
@@ -180,7 +193,6 @@ func printResults(results []*speedtester.Result) {
 		} else {
 			packetLossStr = colorRed + packetLossStr + colorReset
 		}
-
 		// 下载速度颜色 (以MB/s为单位判断)
 		downloadSpeed := result.DownloadSpeed / (1024 * 1024)
 		downloadSpeedStr := result.FormatDownloadSpeed()
@@ -191,7 +203,6 @@ func printResults(results []*speedtester.Result) {
 		} else {
 			downloadSpeedStr = colorRed + downloadSpeedStr + colorReset
 		}
-
 		// 上传速度颜色
 		uploadSpeed := result.UploadSpeed / (1024 * 1024)
 		uploadSpeedStr := result.FormatUploadSpeed()
@@ -202,7 +213,6 @@ func printResults(results []*speedtester.Result) {
 		} else {
 			uploadSpeedStr = colorRed + uploadSpeedStr + colorReset
 		}
-
 		var row []string
 		if *fastMode {
 			row = []string{
@@ -226,51 +236,90 @@ func printResults(results []*speedtester.Result) {
 
 		table.Append(row)
 	}
-
 	fmt.Println()
 	table.Render()
 	fmt.Println()
 }
 
-func saveConfig(results []*speedtester.Result) error {
+func saveConfig(results []*speedtester.Result, speedTester *speedtester.SpeedTester) error {
 	proxies := make([]map[string]any, 0)
+
+	// Filter results first
+	var validResults []*speedtester.Result
 	for _, result := range results {
 		if *maxLatency > 0 && result.Latency > *maxLatency {
 			continue
 		}
-		if *downloadSize > 0 && *minDownloadSpeed > 0 && result.DownloadSpeed < *minDownloadSpeed*1024*1024 {
+		if result.Latency == 0 {
 			continue
 		}
-		if *uploadSize > 0 && *minUploadSpeed > 0 && result.UploadSpeed < *minUploadSpeed*1024*1024 {
-			continue
-		}
-
-		proxyConfig := result.ProxyConfig
-		if *renameNodes {
-			location, err := getIPLocation(proxyConfig["server"].(string))
-			if err != nil || location.CountryCode == "" {
-				proxies = append(proxies, proxyConfig)
+		if !*fastMode {
+			if *downloadSize > 0 && *minDownloadSpeed > 0 && result.DownloadSpeed < *minDownloadSpeed*1024*1024 {
 				continue
 			}
-			proxyConfig["name"] = generateNodeName(location.CountryCode, result.DownloadSpeed)
+			if *uploadSize > 0 && *minUploadSpeed > 0 && result.UploadSpeed < *minUploadSpeed*1024*1024 {
+				continue
+			}
 		}
-		proxies = append(proxies, proxyConfig)
+		validResults = append(validResults, result)
+	}
+	if *renameNodes {
+		var wg sync.WaitGroup
+		semaphore := make(chan struct{}, *concurrent)
+		for _, result := range validResults {
+			wg.Add(1)
+			go func(r *speedtester.Result) {
+				defer wg.Done()
+				semaphore <- struct{}{}
+				defer func() { <-semaphore }()
+				location, err := speedTester.GetIPLocation(r.Proxy)
+				countryCode := "UNKNOWN"
+				if err == nil && location.CountryCode != "" {
+					countryCode = location.CountryCode
+				}
+				proxyConfig := r.ProxyConfig
+				if *fastMode {
+					newUUID := uuid.New().String()
+					proxyConfig["name"] = fmt.Sprintf("%s|%s|%s|%dms|%s",
+						countryNames[countryCode],
+						countryCode,
+						countryFlags[countryCode],
+						r.Latency.Milliseconds(),
+						newUUID)
+				} else {
+					proxyConfig["name"] = generateNodeName(countryCode, r.DownloadSpeed)
+				}
+			}(result)
+		}
+		wg.Wait()
+	}
+
+	for _, result := range validResults {
+		proxies = append(proxies, result.ProxyConfig)
 	}
 
 	config := &speedtester.RawConfig{
 		Proxies: proxies,
 	}
+	if len(proxies) == 0 {
+		log.Warnln("No proxy available,No output!")
+		return nil
+	}
 	yamlData, err := yaml.Marshal(config)
 	if err != nil {
 		return err
 	}
-
 	return os.WriteFile(*outputPath, yamlData, 0o644)
 }
 
-type IPLocation struct {
-	Country     string `json:"country"`
-	CountryCode string `json:"countryCode"`
+func generateNodeName(countryCode string, downloadSpeed float64) string {
+	flag, exists := countryFlags[strings.ToUpper(countryCode)]
+	if !exists {
+		flag = "🏳️"
+	}
+
+	speedMBps := downloadSpeed / (1024 * 1024)
+	return fmt.Sprintf("%s %s | ⬇️ %.2f MB/s", flag, strings.ToUpper(countryCode), speedMBps)
 }
 
 var countryFlags = map[string]string{
@@ -288,38 +337,22 @@ var countryFlags = map[string]string{
 	"PR": "🇵🇷", "VI": "🇻🇮", "GU": "🇬🇺", "AS": "🇦🇸", "MP": "🇲🇵", "PW": "🇵🇼", "FM": "🇫🇲", "MH": "🇲🇭",
 	"KI": "🇰🇮", "TV": "🇹🇻", "NR": "🇳🇷", "WS": "🇼🇸", "TO": "🇹🇴", "FJ": "🇫🇯", "VU": "🇻🇺", "SB": "🇸🇧",
 	"PG": "🇵🇬", "NC": "🇳🇨", "PF": "🇵🇫", "WF": "🇼🇫", "CK": "🇨🇰", "NU": "🇳🇺", "TK": "🇹🇰", "SC": "🇸🇨",
+	"UNKNOWN": "🏳️",
 }
-
-func getIPLocation(ip string) (*IPLocation, error) {
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Get(fmt.Sprintf("http://ip-api.com/json/%s?fields=country,countryCode", ip))
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("failed to get location for IP %s", ip)
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	var location IPLocation
-	if err := json.Unmarshal(body, &location); err != nil {
-		return nil, err
-	}
-	return &location, nil
-}
-
-func generateNodeName(countryCode string, downloadSpeed float64) string {
-	flag, exists := countryFlags[strings.ToUpper(countryCode)]
-	if !exists {
-		flag = "🏳️"
-	}
-
-	speedMBps := downloadSpeed / (1024 * 1024)
-	return fmt.Sprintf("%s %s | ⬇️ %.2f MB/s", flag, strings.ToUpper(countryCode), speedMBps)
+var countryNames = map[string]string{
+	"US": "美国", "CN": "中国", "GB": "英国", "UK": "英国", "JP": "日本", "DE": "德国", "FR": "法国", "RU": "俄罗斯",
+	"SG": "新加坡", "HK": "香港", "TW": "台湾", "KR": "韩国", "CA": "加拿大", "AU": "澳大利亚", "NL": "荷兰", "IT": "意大利",
+	"ES": "西班牙", "SE": "瑞典", "NO": "挪威", "DK": "丹麦", "FI": "芬兰", "CH": "瑞士", "AT": "奥地利", "BE": "比利时",
+	"BR": "巴西", "IN": "印度", "TH": "泰国", "MY": "马来西亚", "VN": "越南", "PH": "菲律宾", "ID": "印度尼西亚", "UA": "乌克兰",
+	"TR": "土耳其", "IL": "以色列", "AE": "阿联酋", "SA": "沙特阿拉伯", "EG": "埃及", "ZA": "南非", "NG": "尼日利亚", "KE": "肯尼亚",
+	"RO": "罗马尼亚", "PL": "波兰", "CZ": "捷克", "HU": "匈牙利", "BG": "保加利亚", "HR": "克罗地亚", "SI": "斯洛文尼亚", "SK": "斯洛伐克",
+	"LT": "立陶宛", "LV": "拉脱维亚", "EE": "爱沙尼亚", "PT": "葡萄牙", "GR": "希腊", "IE": "爱尔兰", "LU": "卢森堡", "MT": "马耳他",
+	"CY": "塞浦路斯", "IS": "冰岛", "MX": "墨西哥", "AR": "阿根廷", "CL": "智利", "CO": "哥伦比亚", "PE": "秘鲁", "VE": "委内瑞拉",
+	"EC": "厄瓜多尔", "UY": "乌拉圭", "PY": "巴拉圭", "BO": "玻利维亚", "CR": "哥斯达黎加", "PA": "巴拿马", "GT": "危地马拉", "HN": "洪都拉斯",
+	"SV": "萨尔瓦多", "NI": "尼加拉瓜", "BZ": "伯利兹", "JM": "牙买加", "TT": "特立尼达和多巴哥", "BB": "巴巴多斯", "GD": "格林纳达", "LC": "圣卢西亚",
+	"VC": "圣文森特和格林纳丁斯", "AG": "安提瓜和巴布达", "DM": "多米尼克", "KN": "圣基茨和尼维斯", "BS": "巴哈马", "CU": "古巴", "DO": "多米尼加", "HT": "海地",
+	"PR": "波多黎各", "VI": "美属维尔京群岛", "GU": "关岛", "AS": "美属萨摩亚", "MP": "北马里亚纳群岛", "PW": "帕劳", "FM": "密克罗尼西亚", "MH": "马绍尔群岛",
+	"KI": "基里巴斯", "TV": "图瓦卢", "NR": "瑙鲁", "WS": "萨摩亚", "TO": "汤加", "FJ": "斐济", "VU": "瓦努阿图", "SB": "所罗门群岛",
+	"PG": "巴布亚新几内亚", "NC": "新喀里多尼亚", "PF": "法属波利尼西亚", "WF": "瓦利斯和富图纳", "CK": "库克群岛", "NU": "纽埃", "TK": "托克劳", "SC": "塞舌尔",
+	"UNKNOWN": "未知",
 }
