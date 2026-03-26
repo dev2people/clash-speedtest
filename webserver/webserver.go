@@ -37,6 +37,7 @@ func New(port int) (*Server, error) {
 // Start 启动 Web 服务器
 func (s *Server) Start() error {
 	http.HandleFunc("/speedtest", s.handleSpeedTest)
+	http.HandleFunc("/speedtest_append_name", s.handleSpeedTestAppendName)
 	http.HandleFunc("/health", s.handleHealth)
 
 	addr := fmt.Sprintf(":%d", s.port)
@@ -97,7 +98,60 @@ func (s *Server) handleSpeedTest(w http.ResponseWriter, r *http.Request) {
 	log.Printf("收到测速请求，配置大小: %d 字节", len(body))
 
 	// 执行测速
-	resultYAML, err := s.performSpeedTest(body)
+	resultYAML, err := s.performSpeedTest(body, false)
+	if err != nil {
+		log.Printf("测速失败: %v", err)
+		http.Error(w, fmt.Sprintf("测速失败: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// 返回结果
+	w.Header().Set("Content-Type", "text/yaml; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	w.Write(resultYAML)
+
+	log.Printf("测速完成，返回结果大小: %d 字节", len(resultYAML))
+}
+
+// handleSpeedTest 处理测速请求
+func (s *Server) handleSpeedTestAppendName(w http.ResponseWriter, r *http.Request) {
+	// 只接受 POST 请求
+	if r.Method != http.MethodPost {
+		http.Error(w, "只支持 POST 方法", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// 验证 Authorization header
+	authHeader := r.Header.Get("Authorization")
+	if !s.validateAuth(authHeader) {
+		http.Error(w, "未授权：无效的 Authorization header", http.StatusUnauthorized)
+		return
+	}
+
+	// 读取请求体（YAML 配置）
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("读取请求体失败: %v", err), http.StatusBadRequest)
+		return
+	}
+	defer r.Body.Close()
+
+	if len(body) == 0 {
+		http.Error(w, "请求体不能为空", http.StatusBadRequest)
+		return
+	}
+
+	// 验证是否为有效的 YAML
+	var testConfig map[string]interface{}
+	if err := yaml.Unmarshal(body, &testConfig); err != nil {
+		http.Error(w, fmt.Sprintf("无效的 YAML 格式: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	log.Printf("收到测速请求，配置大小: %d 字节", len(body))
+
+	// 执行测速
+	resultYAML, err := s.performSpeedTest(body, true)
 	if err != nil {
 		log.Printf("测速失败: %v", err)
 		http.Error(w, fmt.Sprintf("测速失败: %v", err), http.StatusInternalServerError)
@@ -128,7 +182,7 @@ func (s *Server) validateAuth(authHeader string) bool {
 }
 
 // performSpeedTest 执行测速并返回结果 YAML
-func (s *Server) performSpeedTest(yamlData []byte) ([]byte, error) {
+func (s *Server) performSpeedTest(yamlData []byte, isAppend bool) ([]byte, error) {
 	// 创建临时文件保存配置
 	tmpFile, err := os.CreateTemp("", "speedtest-*.yaml")
 	if err != nil {
@@ -192,7 +246,11 @@ func (s *Server) performSpeedTest(yamlData []byte) ([]byte, error) {
 	//}
 
 	// 重命名节点
-	renameNodes(validResults, tester, config.Concurrent)
+	if isAppend {
+		renameNodesAppend(validResults, tester, config.Concurrent)
+	} else {
+		renameNodes(validResults, tester, config.Concurrent)
+	}
 
 	// 生成输出 YAML
 	proxies := make([]map[string]any, 0)
@@ -261,6 +319,40 @@ func renameNodes(results []*speedtester.Result, tester *speedtester.SpeedTester,
 				getCountryFlag(countryCode),
 				r.Latency.Milliseconds(),
 				newUUID)
+		}(result)
+	}
+
+	wg.Wait()
+}
+
+// renameNodes 重命名节点
+func renameNodesAppend(results []*speedtester.Result, tester *speedtester.SpeedTester, concurrent int) {
+	var wg sync.WaitGroup
+	semaphore := make(chan struct{}, concurrent)
+
+	for _, result := range results {
+		wg.Add(1)
+		go func(r *speedtester.Result) {
+			defer wg.Done()
+			semaphore <- struct{}{}
+			defer func() { <-semaphore }()
+
+			location, err := tester.GetIPLocation(r.Proxy)
+			countryCode := "UNKNOWN"
+			if err == nil && location.CountryCode != "" {
+				countryCode = location.CountryCode
+			}
+
+			proxyConfig := r.ProxyConfig
+
+			// 生成新名称：国家名|国家代码|国旗|延迟|UUID
+			//newUUID := uuid.New().String()
+			proxyConfig["name"] = fmt.Sprintf("%s|%s|%s|%dms|%s",
+				getCountryName(countryCode),
+				countryCode,
+				getCountryFlag(countryCode),
+				r.Latency.Milliseconds(),
+				proxyConfig["name"])
 		}(result)
 	}
 
