@@ -54,8 +54,18 @@ SPEEDTEST_RESPONSE=$(curl -s -w "\n状态码: %{http_code}" -X POST http://local
 echo "$SPEEDTEST_RESPONSE"
 echo ""
 
+# 测试配置过滤接口
+echo "5️⃣  测试配置过滤接口 /speedtest_config_filter（正确的 AUTH_KEY）..."
+echo "发送 test.yaml 配置文件..."
+CONFIG_FILTER_RESPONSE=$(curl -s -w "\n状态码: %{http_code}" -X POST http://localhost:$PORT/speedtest_config_filter \
+  -H "Authorization: Bearer $AUTH_KEY" \
+  -H "Content-Type: text/yaml" \
+  --data-binary @test.yaml)
+echo "$CONFIG_FILTER_RESPONSE"
+echo ""
+
 # 停止服务器
-echo "5️⃣  停止 Web 服务器..."
+echo "6️⃣  停止 Web 服务器..."
 kill $SERVER_PID
 wait $SERVER_PID 2>/dev/null || true
 
@@ -64,7 +74,12 @@ echo "✅ 测试完成！"
 echo ""
 echo "📖 使用说明："
 echo "   启动服务器: AUTH_KEY=\"your-key\" ./clash-speedtest -web -port 8080"
-echo "   调用 API:    curl -X POST http://localhost:8080/speedtest \\"
+echo "   测速 API:   curl -X POST http://localhost:8080/speedtest \\"
 echo "                  -H \"Authorization: Bearer your-key\" \\"
 echo "                  -H \"Content-Type: text/yaml\" \\"
 echo "                  --data-binary @config.yaml"
+echo "   过滤 API:   curl -X POST http://localhost:8080/speedtest_config_filter \\"
+echo "                  -H \"Authorization: Bearer your-key\" \\"
+echo "                  -H \"Content-Type: text/yaml\" \\"
+echo "                  --data-binary @config.yaml"
+

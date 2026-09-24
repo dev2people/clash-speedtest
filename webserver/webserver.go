@@ -38,11 +38,14 @@ func New(port int) (*Server, error) {
 func (s *Server) Start() error {
 	http.HandleFunc("/speedtest", s.handleSpeedTest)
 	http.HandleFunc("/speedtest_append_name", s.handleSpeedTestAppendName)
+	http.HandleFunc("/speedtest_config_filter", s.handleSpeedTestConfigFilter)
 	http.HandleFunc("/health", s.handleHealth)
 
 	addr := fmt.Sprintf(":%d", s.port)
 	log.Printf("Web 服务器启动在端口 %d", s.port)
 	log.Printf("POST /speedtest - 执行测速（需要 Authorization header）")
+	log.Printf("POST /speedtest_append_name - 执行测速并追加节点名称（需要 Authorization header）")
+	log.Printf("POST /speedtest_config_filter - 仅验证并过滤有效节点配置（不连接网络，需要 Authorization header）")
 	log.Printf("GET  /health - 健康检查")
 
 	return http.ListenAndServe(addr, nil)
@@ -166,6 +169,52 @@ func (s *Server) handleSpeedTestAppendName(w http.ResponseWriter, r *http.Reques
 	log.Printf("测速完成，返回结果大小: %d 字节", len(resultYAML))
 }
 
+// handleSpeedTestConfigFilter 处理仅验证配置有效性的过滤请求
+func (s *Server) handleSpeedTestConfigFilter(w http.ResponseWriter, r *http.Request) {
+	// 只接受 POST 请求
+	if r.Method != http.MethodPost {
+		http.Error(w, "只支持 POST 方法", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// 验证 Authorization header
+	authHeader := r.Header.Get("Authorization")
+	if !s.validateAuth(authHeader) {
+		http.Error(w, "未授权：无效的 Authorization header", http.StatusUnauthorized)
+		return
+	}
+
+	// 读取请求体（YAML 配置）
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("读取请求体失败: %v", err), http.StatusBadRequest)
+		return
+	}
+	defer r.Body.Close()
+
+	if len(body) == 0 {
+		http.Error(w, "请求体不能为空", http.StatusBadRequest)
+		return
+	}
+
+	log.Printf("收到配置过滤请求，配置大小: %d 字节", len(body))
+
+	// 执行配置过滤（仅验证配置创建，不连接网络）
+	resultYAML, err := speedtester.FilterValidConfigs(body)
+	if err != nil {
+		log.Printf("配置过滤失败: %v", err)
+		http.Error(w, fmt.Sprintf("配置过滤失败: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	// 返回结果
+	w.Header().Set("Content-Type", "text/yaml; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	w.Write(resultYAML)
+
+	log.Printf("配置过滤完成，返回结果大小: %d 字节", len(resultYAML))
+}
+
 // validateAuth 验证 Authorization header
 func (s *Server) validateAuth(authHeader string) bool {
 	// 期望格式: "Bearer <token>"
@@ -252,10 +301,27 @@ func (s *Server) performSpeedTest(yamlData []byte, isAppend bool) ([]byte, error
 		renameNodes(validResults, tester, config.Concurrent)
 	}
 
-	// 生成输出 YAML
+	// 收集节点配置与重命名映射关系
 	proxies := make([]map[string]any, 0)
+	nameMapping := make(map[string]string)
 	for _, result := range validResults {
 		proxies = append(proxies, result.ProxyConfig)
+		if newName, ok := result.ProxyConfig["name"].(string); ok && newName != "" {
+			nameMapping[result.ProxyName] = newName
+		}
+	}
+
+	// 解析原始 YAML 以同步清洗 proxy-groups 及保留其他顶级配置
+	var root map[string]any
+	if err := yaml.Unmarshal(yamlData, &root); err == nil && root != nil {
+		speedtester.CleanProxyGroups(root, nameMapping)
+		root["proxies"] = proxies
+
+		yamlOutput, err := yaml.Marshal(root)
+		if err != nil {
+			return nil, fmt.Errorf("生成 YAML 失败: %v", err)
+		}
+		return yamlOutput, nil
 	}
 
 	outputConfig := &speedtester.RawConfig{

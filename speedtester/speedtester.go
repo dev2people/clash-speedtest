@@ -65,7 +65,7 @@ type CProxy struct {
 }
 
 type RawConfig struct {
-	Providers map[string]map[string]any `yaml:"proxy-providers"`
+	Providers map[string]map[string]any `yaml:"proxy-providers,omitempty"`
 	Proxies   []map[string]any          `yaml:"proxies"`
 }
 
@@ -150,7 +150,7 @@ func (st *SpeedTester) LoadProxies(stashCompatible bool) (map[string]*CProxy, er
 				continue
 			}
 
-			pd, err := provider.ParseProxyProvider(name, config)
+			pd, err := provider.ParseProxyProvider(name, config, nil)
 			if err != nil {
 				log.Warnln("Failed to parse provider %s: %v", name, err)
 				continue
@@ -794,4 +794,157 @@ func (st *SpeedTester) GetIPLocation(proxy constant.Proxy) (*IPLocation, error) 
 		return nil, err
 	}
 	return &location, nil
+}
+
+// IsBuiltinProxy 判断是否为 Clash 内置代理或策略名称
+func IsBuiltinProxy(name string) bool {
+	switch strings.ToUpper(strings.TrimSpace(name)) {
+	case "DIRECT", "REJECT", "GLOBAL", "COMPATIBLE", "PASS":
+		return true
+	default:
+		return false
+	}
+}
+
+// CleanProxyGroups 清理并同步 proxy-groups 中的节点引用
+// nameMapping 为旧节点名到新节点名的映射（如果不重命名，则 key=value 且仅包含有效节点）
+// 如果某个被引用的节点不在 nameMapping 中、不是已知 group 也不是内置代理，则从 group.proxies 中剔除
+// 如果剔除后 group.proxies 为空且该 group 无 use 动态引用，则保底填入 "DIRECT" 防止 Clash 报错
+func CleanProxyGroups(root map[string]any, nameMapping map[string]string) {
+	rawGroups, ok := root["proxy-groups"].([]any)
+	if !ok || len(rawGroups) == 0 {
+		return
+	}
+
+	// 收集所有 group 名称
+	groupNames := make(map[string]bool)
+	for _, g := range rawGroups {
+		if gm, ok := g.(map[string]any); ok {
+			if gName, ok := gm["name"].(string); ok && gName != "" {
+				groupNames[gName] = true
+			}
+		}
+	}
+
+	cleanedGroups := make([]any, 0, len(rawGroups))
+	for _, g := range rawGroups {
+		gm, ok := g.(map[string]any)
+		if !ok {
+			cleanedGroups = append(cleanedGroups, g)
+			continue
+		}
+
+		rawProxies, hasProxies := gm["proxies"].([]any)
+		if hasProxies {
+			var newProxies []any
+			for _, p := range rawProxies {
+				pName, ok := p.(string)
+				if !ok {
+					continue
+				}
+
+				// 1. 如果在有效节点映射中，更新为新名称（若重命名）或保留
+				if newName, exists := nameMapping[pName]; exists {
+					newProxies = append(newProxies, newName)
+				} else if groupNames[pName] {
+					// 2. 如果是其他 group 的名字，保留
+					newProxies = append(newProxies, pName)
+				} else if IsBuiltinProxy(pName) {
+					// 3. 如果是内置策略（DIRECT/REJECT 等），保留
+					newProxies = append(newProxies, pName)
+				}
+				// 其他未匹配的无效/已删除节点自动被剔除
+			}
+
+			// 如果清理后节点列表为空，且该分组没有配置 use (动态 provider)
+			hasUse := false
+			if useList, ok := gm["use"].([]any); ok && len(useList) > 0 {
+				hasUse = true
+			}
+
+			if len(newProxies) == 0 && !hasUse {
+				// 保底填入 DIRECT，防止 Clash 启动报错 empty proxy group
+				newProxies = append(newProxies, "DIRECT")
+			}
+
+			gm["proxies"] = newProxies
+		}
+
+		cleanedGroups = append(cleanedGroups, gm)
+	}
+
+	root["proxy-groups"] = cleanedGroups
+}
+
+// FilterValidConfigs 解析并验证 YAML 配置中的所有代理节点，仅保留配置有效且类型支持的节点（不连接网站）
+// 同时会自动同步清洗 proxy-groups，剔除失效节点并保留原始其他配置字段
+func FilterValidConfigs(yamlData []byte) ([]byte, error) {
+	var root map[string]any
+	if err := yaml.Unmarshal(yamlData, &root); err != nil {
+		return nil, fmt.Errorf("无效的 YAML 格式: %w", err)
+	}
+
+	rawCfg := &RawConfig{
+		Proxies: []map[string]any{},
+	}
+	if err := yaml.Unmarshal(yamlData, rawCfg); err != nil {
+		return nil, fmt.Errorf("解析代理配置失败: %w", err)
+	}
+
+	validProxies := make([]map[string]any, 0)
+	nameMapping := make(map[string]string)
+
+	for i, proxyConfig := range rawCfg.Proxies {
+		// 尝试通过 mihomo adapter 创建 proxy 实例以验证配置
+		proxy, err := adapter.ParseProxy(proxyConfig)
+		if err != nil {
+			log.Warnln("跳过无效代理配置第 %d 项: %v", i+1, err)
+			continue
+		}
+
+		// 检查代理类型是否受支持
+		switch proxy.Type() {
+		case constant.Shadowsocks, constant.ShadowsocksR, constant.Snell, constant.Socks5, constant.Http,
+			constant.Vmess, constant.Vless, constant.Trojan, constant.Hysteria, constant.Hysteria2,
+			constant.WireGuard, constant.Tuic, constant.Ssh, constant.Mieru, constant.AnyTLS:
+			// 支持的类型
+		default:
+			log.Warnln("跳过不受支持的代理类型 %s (第 %d 项)", proxy.Type(), i+1)
+			continue
+		}
+
+		// 修复 IPv6 映射地址（如果存在）
+		if server, ok := proxyConfig["server"].(string); ok {
+			proxyConfig["server"] = convertMappedIPv6ToIPv4(server)
+		}
+
+		if name, ok := proxyConfig["name"].(string); ok && name != "" {
+			nameMapping[name] = name
+		}
+
+		validProxies = append(validProxies, proxyConfig)
+	}
+
+	if root != nil {
+		// 同步清理 proxy-groups 中的无效节点引用
+		CleanProxyGroups(root, nameMapping)
+		root["proxies"] = validProxies
+
+		yamlOutput, err := yaml.Marshal(root)
+		if err != nil {
+			return nil, fmt.Errorf("生成 YAML 失败: %w", err)
+		}
+		return yamlOutput, nil
+	}
+
+	outputConfig := &RawConfig{
+		Proxies: validProxies,
+	}
+
+	yamlOutput, err := yaml.Marshal(outputConfig)
+	if err != nil {
+		return nil, fmt.Errorf("生成 YAML 失败: %w", err)
+	}
+
+	return yamlOutput, nil
 }
