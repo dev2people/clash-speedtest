@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	_ "time/tzdata"
 
 	"github.com/faceair/clash-speedtest/speedtester"
 	"github.com/faceair/clash-speedtest/webserver"
