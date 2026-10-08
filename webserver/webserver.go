@@ -91,6 +91,8 @@ func (s *Server) handleSpeedTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	body = speedtester.CleanYAMLControlCharacters(body)
+
 	// 验证是否为有效的 YAML
 	var testConfig map[string]interface{}
 	if err := yaml.Unmarshal(body, &testConfig); err != nil {
@@ -143,6 +145,8 @@ func (s *Server) handleSpeedTestAppendName(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "请求体不能为空", http.StatusBadRequest)
 		return
 	}
+
+	body = speedtester.CleanYAMLControlCharacters(body)
 
 	// 验证是否为有效的 YAML
 	var testConfig map[string]interface{}
@@ -197,6 +201,8 @@ func (s *Server) handleSpeedTestConfigFilter(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	body = speedtester.CleanYAMLControlCharacters(body)
+
 	log.Printf("收到配置过滤请求，配置大小: %d 字节", len(body))
 
 	// 执行配置过滤（仅验证配置创建，不连接网络）
@@ -232,6 +238,7 @@ func (s *Server) validateAuth(authHeader string) bool {
 
 // performSpeedTest 执行测速并返回结果 YAML
 func (s *Server) performSpeedTest(yamlData []byte, isAppend bool) ([]byte, error) {
+	yamlData = speedtester.CleanYAMLControlCharacters(yamlData)
 	// 创建临时文件保存配置
 	tmpFile, err := os.CreateTemp("", "speedtest-*.yaml")
 	if err != nil {

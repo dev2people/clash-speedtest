@@ -1,6 +1,7 @@
 package speedtester
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/metacubex/mihomo/adapter"
 	"github.com/metacubex/mihomo/adapter/provider"
@@ -24,24 +26,27 @@ import (
 )
 
 type Config struct {
-	ConfigPaths      string
-	FilterRegex      string
-	BlockRegex       string
-	ServerURL        string
-	DownloadSize     int
-	UploadSize       int
-	Timeout          time.Duration
-	Concurrent       int
-	MaxLatency       time.Duration
-	MinDownloadSpeed float64
-	MinUploadSpeed   float64
-	FastMode         bool
+	ConfigPaths       string
+	FilterRegex       string
+	BlockRegex        string
+	ServerURL         string
+	DownloadSize      int
+	UploadSize        int
+	Timeout           time.Duration
+	Concurrent        int
+	MaxLatency        time.Duration
+	MinDownloadSpeed  float64
+	MinUploadSpeed    float64
+	FastMode          bool
+	RelayPoolURL      string
+	RelaySuccessCount int
 }
 
 type SpeedTester struct {
 	config           *Config
 	blockedNodes     []string
 	blockedNodeCount int
+	relayProxies     []*CProxy
 }
 
 func New(config *Config) *SpeedTester {
@@ -54,9 +59,45 @@ func New(config *Config) *SpeedTester {
 	if config.UploadSize < 0 {
 		config.UploadSize = 10 * 1024 * 1024
 	}
-	return &SpeedTester{
+
+	// 检查中继代理池环境变量
+	if config.RelayPoolURL == "" {
+		config.RelayPoolURL = os.Getenv("RELAY_POOL_URL")
+	}
+	if config.RelaySuccessCount <= 0 {
+		if envVal := os.Getenv("RELAY_SUCCESS_COUNT"); envVal != "" {
+			if n, err := strconv.Atoi(envVal); err == nil && n > 0 {
+				config.RelaySuccessCount = n
+			}
+		} else if envVal := os.Getenv("RELAY_COUNT"); envVal != "" {
+			if n, err := strconv.Atoi(envVal); err == nil && n > 0 {
+				config.RelaySuccessCount = n
+			}
+		}
+	}
+	if config.RelaySuccessCount <= 0 {
+		config.RelaySuccessCount = 1
+	}
+
+	st := &SpeedTester{
 		config: config,
 	}
+
+	if config.RelayPoolURL != "" {
+		relays, err := LoadRelayPool(config.RelayPoolURL)
+		if err != nil {
+			log.Warnln("加载中继代理池失败: %v", err)
+		} else {
+			st.relayProxies = relays
+			log.Infoln("启用了中继测试模式，中继池可用节点数: %d，要求达标中继数: %d", len(relays), config.RelaySuccessCount)
+		}
+	}
+
+	return st
+}
+
+func (st *SpeedTester) RelayProxyCount() int {
+	return len(st.relayProxies)
 }
 
 type CProxy struct {
@@ -104,6 +145,8 @@ func (st *SpeedTester) LoadProxies(stashCompatible bool) (map[string]*CProxy, er
 				continue
 			}
 		}
+
+		body = CleanYAMLControlCharacters(body)
 
 		// 解析配置
 		rawCfg := &RawConfig{
@@ -512,6 +555,10 @@ func formatSpeed(bytesPerSecond float64) string {
 	return fmt.Sprintf("%.2f%s", speed, units[unit])
 }
 func (st *SpeedTester) testProxy(name string, proxy *CProxy) *Result {
+	if len(st.relayProxies) > 0 {
+		return st.testProxyWithRelayPool(name, proxy)
+	}
+
 	result := &Result{
 		ProxyName:   name,
 		ProxyType:   proxy.Type().String(),
@@ -879,6 +926,7 @@ func CleanProxyGroups(root map[string]any, nameMapping map[string]string) {
 // FilterValidConfigs 解析并验证 YAML 配置中的所有代理节点，仅保留配置有效且类型支持的节点（不连接网站）
 // 同时会自动同步清洗 proxy-groups，剔除失效节点并保留原始其他配置字段
 func FilterValidConfigs(yamlData []byte) ([]byte, error) {
+	yamlData = CleanYAMLControlCharacters(yamlData)
 	var root map[string]any
 	if err := yaml.Unmarshal(yamlData, &root); err != nil {
 		return nil, fmt.Errorf("无效的 YAML 格式: %w", err)
@@ -947,4 +995,41 @@ func FilterValidConfigs(yamlData []byte) ([]byte, error) {
 	}
 
 	return yamlOutput, nil
+}
+
+var ansiRegex = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
+
+// CleanYAMLControlCharacters 过滤 YAML 1.2 规范中禁止的控制字符及 ANSI 转义序列，防止 yaml.Unmarshal 报错:
+// yaml: control characters are not allowed
+func CleanYAMLControlCharacters(data []byte) []byte {
+	if len(data) == 0 {
+		return data
+	}
+
+	// 如果包含 \x1b，先清除 ANSI 转义序列（如 \x1b[31m 颜色码）
+	if bytes.Contains(data, []byte("\x1b")) {
+		data = ansiRegex.ReplaceAll(data, nil)
+	}
+
+	buf := make([]byte, 0, len(data))
+	i := 0
+	for i < len(data) {
+		r, size := utf8.DecodeRune(data[i:])
+		if r == utf8.RuneError && size == 1 {
+			// 跳过无效 UTF-8 字节
+			i += size
+			continue
+		}
+		// YAML 规范与 yaml.v3 的禁止控制字符规则:
+		// - r < 0x20 且 r != '\t' && r != '\n' && r != '\r'
+		// - r == 0x7f (DEL)
+		// - r >= 0x80 && r <= 0x9f && r != 0x85 (C1 控制字符，除了 NEL 0x85)
+		if (r < 0x20 && r != '\t' && r != '\n' && r != '\r') || r == 0x7f || (r >= 0x80 && r <= 0x9f && r != 0x85) {
+			i += size
+			continue
+		}
+		buf = append(buf, data[i:i+size]...)
+		i += size
+	}
+	return buf
 }

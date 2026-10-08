@@ -37,6 +37,8 @@ var (
 	fastMode          = flag.Bool("fast", false, "fast mode, only test latency")
 	webMode           = flag.Bool("web", false, "enable web server mode")
 	webPort           = flag.Int("port", 8080, "web server port (only used in web mode)")
+	relayPoolURL      = flag.String("relay-pool-url", "", "relay pool url or file path (also reads RELAY_POOL_URL env)")
+	relaySuccessCount = flag.Int("relay-success-count", 0, "minimum successful relays required (default: 1, also reads RELAY_SUCCESS_COUNT env)")
 )
 
 const (
@@ -69,18 +71,20 @@ func main() {
 	}
 
 	speedTester := speedtester.New(&speedtester.Config{
-		ConfigPaths:      *configPathsConfig,
-		FilterRegex:      *filterRegexConfig,
-		BlockRegex:       *blockKeywords,
-		ServerURL:        *serverURL,
-		DownloadSize:     *downloadSize,
-		UploadSize:       *uploadSize,
-		Timeout:          *timeout,
-		Concurrent:       *concurrent,
-		MaxLatency:       *maxLatency,
-		MinDownloadSpeed: *minDownloadSpeed * 1024 * 1024,
-		MinUploadSpeed:   *minUploadSpeed * 1024 * 1024,
-		FastMode:         *fastMode,
+		ConfigPaths:       *configPathsConfig,
+		FilterRegex:       *filterRegexConfig,
+		BlockRegex:        *blockKeywords,
+		ServerURL:         *serverURL,
+		DownloadSize:      *downloadSize,
+		UploadSize:        *uploadSize,
+		Timeout:           *timeout,
+		Concurrent:        *concurrent,
+		MaxLatency:        *maxLatency,
+		MinDownloadSpeed:  *minDownloadSpeed * 1024 * 1024,
+		MinUploadSpeed:    *minUploadSpeed * 1024 * 1024,
+		FastMode:          *fastMode,
+		RelayPoolURL:      *relayPoolURL,
+		RelaySuccessCount: *relaySuccessCount,
 	})
 
 	allProxies, err := speedTester.LoadProxies(*stashCompatible)
