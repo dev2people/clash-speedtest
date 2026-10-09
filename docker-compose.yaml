@@ -9,3 +9,6 @@ services:
     environment:
       - TZ=Asia/Shanghai
       - AUTH_KEY=tsKEkfwK9OMFGJWf8W8xHs7IocnEQk3T
+      - RELAY_POOL_URL=https://raw.githubusercontent.com/dev2people/cn-proxy-node-pool/refs/heads/main/filter-data/allnode-url.txt
+      - RELAY_SUCCESS_COUNT=1
+      - RELAY_SAMPLE_COUNT=10

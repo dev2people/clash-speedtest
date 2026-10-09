@@ -43,6 +43,29 @@ func (s *Server) Start() error {
 
 	addr := fmt.Sprintf(":%d", s.port)
 	log.Printf("Web 服务器启动在端口 %d", s.port)
+	relayURL := os.Getenv("RELAY_POOL_URL")
+	if relayURL != "" {
+		reqCount := os.Getenv("RELAY_SUCCESS_COUNT")
+		if reqCount == "" {
+			reqCount = os.Getenv("RELAY_COUNT")
+		}
+		if reqCount == "" {
+			reqCount = "1"
+		}
+		sampleCount := os.Getenv("RELAY_SAMPLE_COUNT")
+		if sampleCount == "" {
+			sampleCount = os.Getenv("RELAY_TEST_COUNT")
+		}
+		if sampleCount == "" {
+			sampleCount = os.Getenv("RELAY_RANDOM_COUNT")
+		}
+		if sampleCount == "" {
+			sampleCount = "10"
+		}
+		log.Printf("【中继配置】已启用中继模式: 代理池地址: %s, 随机测试中继数: %s, 要求达标中继数: %s", relayURL, sampleCount, reqCount)
+	} else {
+		log.Printf("【中继配置】未配置 RELAY_POOL_URL，默认采用直连测速模式")
+	}
 	log.Printf("POST /speedtest - 执行测速（需要 Authorization header）")
 	log.Printf("POST /speedtest_append_name - 执行测速并追加节点名称（需要 Authorization header）")
 	log.Printf("POST /speedtest_config_filter - 仅验证并过滤有效节点配置（不连接网络，需要 Authorization header）")
@@ -280,7 +303,12 @@ func (s *Server) performSpeedTest(yamlData []byte, isAppend bool) ([]byte, error
 	//	return nil, fmt.Errorf("配置中没有找到可用的代理节点")
 	//}
 
-	log.Printf("加载了 %d 个代理节点，开始测速...", len(allProxies))
+	if tester.RelayProxyCount() > 0 {
+		log.Printf("【中继模式】加载了 %d 个待测代理节点，使用中继代理池测试 (可用中继: %d, 随机测试: %d, 达标要求: %d)...",
+			len(allProxies), tester.RelayProxyCount(), tester.Config().RelaySampleCount, tester.Config().RelaySuccessCount)
+	} else {
+		log.Printf("【直连模式】加载了 %d 个待测代理节点，使用直连测试...", len(allProxies))
+	}
 
 	// 执行测速
 	results := make([]*speedtester.Result, 0)
@@ -290,7 +318,17 @@ func (s *Server) performSpeedTest(yamlData []byte, isAppend bool) ([]byte, error
 		mu.Lock()
 		results = append(results, result)
 		mu.Unlock()
-		log.Printf("测试完成: %s - 延迟: %s", result.ProxyName, result.FormatLatency())
+		if result.RelayUsed {
+			if result.Latency > 0 {
+				log.Printf("测试完成: %s - 延迟: %s (中继达标: %d/%d, 测试中继数: %d, 最优中继: %s)",
+					result.ProxyName, result.FormatLatency(), result.RelaySuccessCount, tester.Config().RelaySuccessCount, result.RelayTestCount, result.BestRelayName)
+			} else {
+				log.Printf("测试完成: %s - 失败 (中继达标: %d/%d, 测试中继数: %d, 未达要求)",
+					result.ProxyName, result.RelaySuccessCount, tester.Config().RelaySuccessCount, result.RelayTestCount)
+			}
+		} else {
+			log.Printf("测试完成: %s - 延迟: %s (直连)", result.ProxyName, result.FormatLatency())
+		}
 	})
 
 	// 过滤和处理结果

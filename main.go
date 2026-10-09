@@ -39,6 +39,7 @@ var (
 	webPort           = flag.Int("port", 8080, "web server port (only used in web mode)")
 	relayPoolURL      = flag.String("relay-pool-url", "", "relay pool url or file path (also reads RELAY_POOL_URL env)")
 	relaySuccessCount = flag.Int("relay-success-count", 0, "minimum successful relays required (default: 1, also reads RELAY_SUCCESS_COUNT env)")
+	relaySampleCount  = flag.Int("relay-sample-count", 0, "sample count of relays to randomly test per node (default: 10, also reads RELAY_SAMPLE_COUNT env)")
 )
 
 const (
@@ -85,11 +86,18 @@ func main() {
 		FastMode:          *fastMode,
 		RelayPoolURL:      *relayPoolURL,
 		RelaySuccessCount: *relaySuccessCount,
+		RelaySampleCount:  *relaySampleCount,
 	})
 
 	allProxies, err := speedTester.LoadProxies(*stashCompatible)
 	if err != nil {
 		log.Fatalln("load proxies failed: %v", err)
+	}
+
+	if speedTester.RelayProxyCount() > 0 {
+		fmt.Printf("【中继模式】已启用，中继池可用节点数: %d，单节点随机测试中继数: %d，要求达标中继数: %d\n", speedTester.RelayProxyCount(), speedTester.Config().RelaySampleCount, speedTester.Config().RelaySuccessCount)
+	} else {
+		fmt.Println("【直连模式】未配置中继代理池，使用直连测速")
 	}
 
 	bar := progressbar.Default(int64(len(allProxies)), "测试中...")

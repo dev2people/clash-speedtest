@@ -17,6 +17,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	stdlog "log"
+
 	"github.com/metacubex/mihomo/adapter"
 	"github.com/metacubex/mihomo/adapter/provider"
 	"github.com/metacubex/mihomo/log"
@@ -40,6 +42,7 @@ type Config struct {
 	FastMode          bool
 	RelayPoolURL      string
 	RelaySuccessCount int
+	RelaySampleCount  int
 }
 
 type SpeedTester struct {
@@ -64,12 +67,16 @@ func New(config *Config) *SpeedTester {
 	if config.RelayPoolURL == "" {
 		config.RelayPoolURL = os.Getenv("RELAY_POOL_URL")
 	}
+	config.RelayPoolURL = strings.Trim(strings.TrimSpace(config.RelayPoolURL), "\"'")
+
 	if config.RelaySuccessCount <= 0 {
 		if envVal := os.Getenv("RELAY_SUCCESS_COUNT"); envVal != "" {
+			envVal = strings.Trim(strings.TrimSpace(envVal), "\"'")
 			if n, err := strconv.Atoi(envVal); err == nil && n > 0 {
 				config.RelaySuccessCount = n
 			}
 		} else if envVal := os.Getenv("RELAY_COUNT"); envVal != "" {
+			envVal = strings.Trim(strings.TrimSpace(envVal), "\"'")
 			if n, err := strconv.Atoi(envVal); err == nil && n > 0 {
 				config.RelaySuccessCount = n
 			}
@@ -79,6 +86,34 @@ func New(config *Config) *SpeedTester {
 		config.RelaySuccessCount = 1
 	}
 
+	if config.RelaySampleCount == 0 {
+		if envVal := os.Getenv("RELAY_SAMPLE_COUNT"); envVal != "" {
+			envVal = strings.Trim(strings.TrimSpace(envVal), "\"'")
+			if strings.ToLower(envVal) == "all" || envVal == "-1" {
+				config.RelaySampleCount = -1
+			} else if n, err := strconv.Atoi(envVal); err == nil && n > 0 {
+				config.RelaySampleCount = n
+			}
+		} else if envVal := os.Getenv("RELAY_TEST_COUNT"); envVal != "" {
+			envVal = strings.Trim(strings.TrimSpace(envVal), "\"'")
+			if strings.ToLower(envVal) == "all" || envVal == "-1" {
+				config.RelaySampleCount = -1
+			} else if n, err := strconv.Atoi(envVal); err == nil && n > 0 {
+				config.RelaySampleCount = n
+			}
+		} else if envVal := os.Getenv("RELAY_RANDOM_COUNT"); envVal != "" {
+			envVal = strings.Trim(strings.TrimSpace(envVal), "\"'")
+			if strings.ToLower(envVal) == "all" || envVal == "-1" {
+				config.RelaySampleCount = -1
+			} else if n, err := strconv.Atoi(envVal); err == nil && n > 0 {
+				config.RelaySampleCount = n
+			}
+		}
+	}
+	if config.RelaySampleCount == 0 {
+		config.RelaySampleCount = 10
+	}
+
 	st := &SpeedTester{
 		config: config,
 	}
@@ -86,10 +121,10 @@ func New(config *Config) *SpeedTester {
 	if config.RelayPoolURL != "" {
 		relays, err := LoadRelayPool(config.RelayPoolURL)
 		if err != nil {
-			log.Warnln("加载中继代理池失败: %v", err)
+			stdlog.Printf("【中继模式】加载中继代理池失败 (%s): %v", config.RelayPoolURL, err)
 		} else {
 			st.relayProxies = relays
-			log.Infoln("启用了中继测试模式，中继池可用节点数: %d，要求达标中继数: %d", len(relays), config.RelaySuccessCount)
+			stdlog.Printf("【中继模式】已启用中继测试模式，中继池可用节点数: %d，单节点随机测试中继数: %d，要求达标中继数: %d (来源: %s)", len(relays), config.RelaySampleCount, config.RelaySuccessCount, config.RelayPoolURL)
 		}
 	}
 
@@ -98,6 +133,10 @@ func New(config *Config) *SpeedTester {
 
 func (st *SpeedTester) RelayProxyCount() int {
 	return len(st.relayProxies)
+}
+
+func (st *SpeedTester) Config() *Config {
+	return st.config
 }
 
 type CProxy struct {
@@ -503,19 +542,23 @@ type testJob struct {
 }
 
 type Result struct {
-	ProxyName     string         `json:"proxy_name"`
-	ProxyType     string         `json:"proxy_type"`
-	ProxyConfig   map[string]any `json:"proxy_config"`
-	Proxy         constant.Proxy `json:"-"`
-	Latency       time.Duration  `json:"latency"`
-	Jitter        time.Duration  `json:"jitter"`
-	PacketLoss    float64        `json:"packet_loss"`
-	DownloadSize  float64        `json:"download_size"`
-	DownloadTime  time.Duration  `json:"download_time"`
-	DownloadSpeed float64        `json:"download_speed"`
-	UploadSize    float64        `json:"upload_size"`
-	UploadTime    time.Duration  `json:"upload_time"`
-	UploadSpeed   float64        `json:"upload_speed"`
+	ProxyName         string         `json:"proxy_name"`
+	ProxyType         string         `json:"proxy_type"`
+	ProxyConfig       map[string]any `json:"proxy_config"`
+	Proxy             constant.Proxy `json:"-"`
+	Latency           time.Duration  `json:"latency"`
+	Jitter            time.Duration  `json:"jitter"`
+	PacketLoss        float64        `json:"packet_loss"`
+	DownloadSize      float64        `json:"download_size"`
+	DownloadTime      time.Duration  `json:"download_time"`
+	DownloadSpeed     float64        `json:"download_speed"`
+	UploadSize        float64        `json:"upload_size"`
+	UploadTime        time.Duration  `json:"upload_time"`
+	UploadSpeed       float64        `json:"upload_speed"`
+	RelayUsed         bool           `json:"relay_used,omitempty"`
+	RelaySuccessCount int            `json:"relay_success_count,omitempty"`
+	RelayTestCount    int            `json:"relay_test_count,omitempty"`
+	BestRelayName     string         `json:"best_relay_name,omitempty"`
 }
 
 func (r *Result) FormatDownloadSpeed() string {
