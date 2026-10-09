@@ -38,17 +38,14 @@ func TestParseProxyFromURL(t *testing.T) {
 			expectedPwd:  "secret123",
 		},
 		{
-			name:        "http proxy",
+			name:        "http proxy unsupported",
 			url:         "http://12.34.56.78:8080",
-			expectError: false,
-			expectedTyp: "http",
+			expectError: true,
 		},
 		{
-			name:        "https proxy",
+			name:        "https proxy unsupported",
 			url:         "https://98.76.54.32:8443",
-			expectError: false,
-			expectedTyp: "http",
-			expectedTLS: true,
+			expectError: true,
 		},
 		{
 			name:        "unsupported scheme socks4",
@@ -106,11 +103,12 @@ proxies:
     port: 1080
 `)
 		proxies := parseRelayPoolContent(yamlData)
-		if len(proxies) != 2 {
-			t.Fatalf("expected 2 proxies, got %d", len(proxies))
+		// 仅 socks5 类型的 cn-relay-2 会被保留，http 被过滤
+		if len(proxies) != 1 {
+			t.Fatalf("expected 1 proxy (socks5 only), got %d", len(proxies))
 		}
-		if proxies[0].Name() != "cn-relay-1" {
-			t.Errorf("expected name cn-relay-1, got %s", proxies[0].Name())
+		if proxies[0].Name() != "cn-relay-2" {
+			t.Errorf("expected name cn-relay-2, got %s", proxies[0].Name())
 		}
 	})
 
@@ -124,9 +122,9 @@ socks4://127.0.0.1:1080
 socks5://user:pass@127.0.0.1:1081
 `)
 		proxies := parseRelayPoolContent(lines)
-		// socks4 should be ignored, 3 proxies should be parsed
-		if len(proxies) != 3 {
-			t.Fatalf("expected 3 valid proxies, got %d", len(proxies))
+		// http 和 socks4 都被忽略，仅 2 个 socks5 会被解析
+		if len(proxies) != 2 {
+			t.Fatalf("expected 2 valid socks5 proxies, got %d", len(proxies))
 		}
 	})
 }
@@ -134,7 +132,7 @@ socks5://user:pass@127.0.0.1:1081
 func TestLoadRelayPoolFileAndCache(t *testing.T) {
 	tmpDir := t.TempDir()
 	filePath := filepath.Join(tmpDir, "relays.txt")
-	content := "socks5://127.0.0.1:1080\nhttp://127.0.0.1:8080\n"
+	content := "socks5://127.0.0.1:1080\nhttp://127.0.0.1:8080\nsocks5://127.0.0.1:1081\n"
 	if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
 		t.Fatalf("failed to write test file: %v", err)
 	}
@@ -144,7 +142,7 @@ func TestLoadRelayPoolFileAndCache(t *testing.T) {
 		t.Fatalf("LoadRelayPool failed: %v", err)
 	}
 	if len(proxies) != 2 {
-		t.Fatalf("expected 2 proxies, got %d", len(proxies))
+		t.Fatalf("expected 2 socks5 proxies, got %d", len(proxies))
 	}
 
 	// Test cache hit
@@ -166,7 +164,7 @@ func TestLoadRelayPoolFileAndCache(t *testing.T) {
 func TestSpeedTesterRelayEnvironmentVariables(t *testing.T) {
 	tmpDir := t.TempDir()
 	filePath := filepath.Join(tmpDir, "env_relays.txt")
-	content := "socks5://127.0.0.1:1080\nhttp://127.0.0.1:8080\n"
+	content := "socks5://127.0.0.1:1080\nsocks5://127.0.0.1:1081\n"
 	if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
 		t.Fatalf("failed to write test file: %v", err)
 	}

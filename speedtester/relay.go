@@ -94,6 +94,16 @@ func parseRelayPoolContent(data []byte) []*CProxy {
 	if err := yaml.Unmarshal(data, &rawCfg); err == nil && len(rawCfg.Proxies) > 0 {
 		var list []*CProxy
 		for i, cfg := range rawCfg.Proxies {
+			// 中继节点只使用 socks5，过滤掉无关或不兼容协议
+			if t, ok := cfg["type"].(string); ok {
+				t = strings.ToLower(strings.TrimSpace(t))
+				if t != "socks5" && t != "socks" {
+					continue
+				}
+			} else {
+				continue
+			}
+
 			p, err := adapter.ParseProxy(cfg)
 			if err != nil {
 				continue
@@ -109,7 +119,7 @@ func parseRelayPoolContent(data []byte) []*CProxy {
 		}
 	}
 
-	// 逐行解析 URL 格式 (socks5://..., http://..., https://...)
+	// 逐行解析 URL 格式 (仅支持 socks5://...)
 	scanner := bufio.NewScanner(bytes.NewReader(data))
 	var list []*CProxy
 	idx := 0
@@ -154,16 +164,13 @@ func parseProxyFromURL(line string, idx int) (map[string]any, error) {
 		return nil, fmt.Errorf("端口无效: %s", portStr)
 	}
 
+	// 中继节点仅支持 socks5
 	var proxyType string
 	switch scheme {
 	case "socks5", "socks":
 		proxyType = "socks5"
-	case "http":
-		proxyType = "http"
-	case "https":
-		proxyType = "http"
 	default:
-		return nil, fmt.Errorf("暂不支持的中继协议类型: %s", scheme)
+		return nil, fmt.Errorf("中继仅支持 socks5 协议，忽略非 socks5: %s", scheme)
 	}
 
 	proxyCfg := map[string]any{
@@ -429,6 +436,8 @@ func (st *SpeedTester) testProxyWithRelayPool(name string, proxy *CProxy) *Resul
 		}
 		stdlog.Printf("【中继未达标】节点 [%s] (%d/%d 成功, 测试 %d 个中继), 原因: %s",
 			name, result.RelaySuccessCount, requiredSuccess, len(candidates), result.RelayFailureReason)
+		//未通过就是0
+		result.Latency = 0
 		return result
 	}
 
@@ -553,6 +562,10 @@ func (st *SpeedTester) testSingleRelay(ctx context.Context, targetProxy *CProxy,
 	client := &http.Client{
 		Timeout:   timeout,
 		Transport: tr,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			// 禁止跟随任何重定向（防止公共中继返回 302 劫持到认证页伪造 200 成功）
+			return http.ErrUseLastResponse
+		},
 	}
 	req, err := http.NewRequestWithContext(reqCtx, "GET", testURL, nil)
 	if err != nil {
@@ -567,8 +580,12 @@ func (st *SpeedTester) testSingleRelay(ctx context.Context, targetProxy *CProxy,
 	defer resp.Body.Close()
 
 	if strings.Contains(testURL, "generate_204") {
+		// generate_204 探测端点要求严格：必须返回 204 No Content，或者无 Body 的 200
 		if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
 			return 0, nil, fmt.Errorf("HTTP 状态码异常: %d", resp.StatusCode)
+		}
+		if resp.ContentLength > 0 {
+			return 0, nil, fmt.Errorf("generate_204 受到中继页面劫持 (Content-Length: %d)", resp.ContentLength)
 		}
 	} else if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return 0, nil, fmt.Errorf("HTTP 状态码异常: %d", resp.StatusCode)
