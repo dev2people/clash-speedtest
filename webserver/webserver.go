@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -275,15 +276,40 @@ func (s *Server) performSpeedTest(yamlData []byte, isAppend bool) ([]byte, error
 	}
 	tmpFile.Close()
 
-	// 使用固定的默认参数创建 SpeedTester
+	// 超时时间：支持通过 TIMEOUT 或 SPEEDTEST_TIMEOUT 环境变量自定义；
+	// 若未显式指定且配置了中继池，默认给予更充裕的 5 秒（避免中继多跳握手耗时导致超时）
+	timeout := 2 * time.Second
+	relayURL := os.Getenv("RELAY_POOL_URL")
+	if envTimeout := os.Getenv("SPEEDTEST_TIMEOUT"); envTimeout != "" {
+		if d, err := time.ParseDuration(envTimeout); err == nil {
+			timeout = d
+		} else if sec, err := strconv.Atoi(envTimeout); err == nil {
+			timeout = time.Duration(sec) * time.Second
+		}
+	} else if envTimeout := os.Getenv("TIMEOUT"); envTimeout != "" {
+		if d, err := time.ParseDuration(envTimeout); err == nil {
+			timeout = d
+		} else if sec, err := strconv.Atoi(envTimeout); err == nil {
+			timeout = time.Duration(sec) * time.Second
+		}
+	} else if strings.TrimSpace(relayURL) != "" {
+		timeout = 5 * time.Second
+	}
+
+	serverURL := "https://speed.cloudflare.com"
+	if envServer := os.Getenv("SERVER_URL"); envServer != "" {
+		serverURL = strings.TrimSpace(envServer)
+	}
+
+	// 使用配置参数创建 SpeedTester
 	config := &speedtester.Config{
 		ConfigPaths:      tmpFile.Name(),
 		FilterRegex:      ".+",
 		BlockRegex:       "",
-		ServerURL:        "https://speed.cloudflare.com",
+		ServerURL:        serverURL,
 		DownloadSize:     50 * 1024 * 1024,
 		UploadSize:       20 * 1024 * 1024,
-		Timeout:          2 * time.Second,
+		Timeout:          timeout,
 		Concurrent:       100,
 		MaxLatency:       5000 * time.Millisecond,
 		MinDownloadSpeed: 0,
@@ -304,10 +330,10 @@ func (s *Server) performSpeedTest(yamlData []byte, isAppend bool) ([]byte, error
 	//}
 
 	if tester.RelayProxyCount() > 0 {
-		log.Printf("【中继模式】加载了 %d 个待测代理节点，使用中继代理池测试 (可用中继: %d, 随机测试: %d, 达标要求: %d)...",
-			len(allProxies), tester.RelayProxyCount(), tester.Config().RelaySampleCount, tester.Config().RelaySuccessCount)
+		log.Printf("【中继模式】加载了 %d 个待测代理节点，使用中继代理池测试 (可用中继: %d, 随机测试: %d, 达标要求: %d, 超时: %v)...",
+			len(allProxies), tester.RelayProxyCount(), tester.Config().RelaySampleCount, tester.Config().RelaySuccessCount, config.Timeout)
 	} else {
-		log.Printf("【直连模式】加载了 %d 个待测代理节点，使用直连测试...", len(allProxies))
+		log.Printf("【直连模式】加载了 %d 个待测代理节点，使用直连测试 (超时: %v)...", len(allProxies), config.Timeout)
 	}
 
 	// 执行测速
@@ -323,8 +349,13 @@ func (s *Server) performSpeedTest(yamlData []byte, isAppend bool) ([]byte, error
 				log.Printf("测试完成: %s - 延迟: %s (中继达标: %d/%d, 测试中继数: %d, 最优中继: %s)",
 					result.ProxyName, result.FormatLatency(), result.RelaySuccessCount, tester.Config().RelaySuccessCount, result.RelayTestCount, result.BestRelayName)
 			} else {
-				log.Printf("测试完成: %s - 失败 (中继达标: %d/%d, 测试中继数: %d, 未达要求)",
-					result.ProxyName, result.RelaySuccessCount, tester.Config().RelaySuccessCount, result.RelayTestCount)
+				if result.RelayFailureReason != "" {
+					log.Printf("测试完成: %s - 失败 (中继达标: %d/%d, 测试中继数: %d, 原因: %s)",
+						result.ProxyName, result.RelaySuccessCount, tester.Config().RelaySuccessCount, result.RelayTestCount, result.RelayFailureReason)
+				} else {
+					log.Printf("测试完成: %s - 失败 (中继达标: %d/%d, 测试中继数: %d, 未达要求)",
+						result.ProxyName, result.RelaySuccessCount, tester.Config().RelaySuccessCount, result.RelayTestCount)
+				}
 			}
 		} else {
 			log.Printf("测试完成: %s - 延迟: %s (直连)", result.ProxyName, result.FormatLatency())

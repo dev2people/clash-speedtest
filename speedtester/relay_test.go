@@ -434,3 +434,115 @@ func TestRelaySampleCountEnvironmentVariables(t *testing.T) {
 
 	os.Unsetenv("RELAY_SAMPLE_COUNT")
 }
+
+func TestUDPProtocolDetectionAndRelayFiltering(t *testing.T) {
+	// 1. isUDPOnlyProxy 检测
+	tests := []struct {
+		pType string
+		isUDP bool
+	}{
+		{"hysteria2", true},
+		{"hysteria", true},
+		{"tuic", true},
+		{"wireguard", true},
+		{"vmess", false},
+		{"vless", false},
+		{"ss", false},
+		{"shadowsocks", false},
+		{"trojan", false},
+		{"socks5", false},
+		{"http", false},
+	}
+	for _, tc := range tests {
+		cp := &CProxy{Config: map[string]any{"type": tc.pType}}
+		if got := isUDPOnlyProxy(cp); got != tc.isUDP {
+			t.Errorf("isUDPOnlyProxy(%s) = %v, expected %v", tc.pType, got, tc.isUDP)
+		}
+	}
+
+	// 2. relaySupportsUDP 检测
+	relayTests := []struct {
+		pType    string
+		supports bool
+	}{
+		{"http", false},
+		{"https", false},
+		{"socks5", true},
+		{"vmess", true},
+		{"shadowsocks", true},
+	}
+	for _, tc := range relayTests {
+		cp := &CProxy{Config: map[string]any{"type": tc.pType}}
+		if got := relaySupportsUDP(cp); got != tc.supports {
+			t.Errorf("relaySupportsUDP(%s) = %v, expected %v", tc.pType, got, tc.supports)
+		}
+	}
+
+	// 3. 当中继池只有 HTTP 代理，且待测节点为 Hysteria2 时，应直接过滤并返回明确原因
+	httpRelay, _ := adapter.ParseProxy(map[string]any{"name": "relay-http", "type": "http", "server": "127.0.0.1", "port": 8080})
+	st := &SpeedTester{
+		config: &Config{
+			RelaySuccessCount: 1,
+			RelaySampleCount:  10,
+		},
+		relayProxies: []*CProxy{
+			{Proxy: httpRelay, Config: map[string]any{"name": "relay-http", "type": "http"}},
+		},
+	}
+
+	hy2Target, _ := adapter.ParseProxy(map[string]any{
+		"name":     "hy2-node",
+		"type":     "hysteria2",
+		"server":   "127.0.0.1",
+		"port":     443,
+		"password": "pass",
+	})
+	res := st.testProxyWithRelayPool("hy2-node", &CProxy{Proxy: hy2Target, Config: map[string]any{"type": "hysteria2"}})
+	if res.Latency != 0 {
+		t.Fatalf("expected latency 0, got %v", res.Latency)
+	}
+	if !res.RelayUsed {
+		t.Fatalf("expected RelayUsed = true")
+	}
+	if res.RelayFailureReason == "" {
+		t.Fatalf("expected RelayFailureReason to be set when no UDP relays exist")
+	}
+	t.Logf("Filtered reason: %s", res.RelayFailureReason)
+
+	// 4. 当中继池混有 HTTP 和 SOCKS5 时，Hysteria2 节点只选取 SOCKS5 中继
+	socksRelay, _ := adapter.ParseProxy(map[string]any{"name": "relay-socks", "type": "socks5", "server": "127.0.0.1", "port": 1080})
+	stMixed := &SpeedTester{
+		config: &Config{
+			RelaySuccessCount: 2,
+			RelaySampleCount:  10,
+		},
+		relayProxies: []*CProxy{
+			{Proxy: httpRelay, Config: map[string]any{"name": "relay-http", "type": "http"}},
+			{Proxy: socksRelay, Config: map[string]any{"name": "relay-socks", "type": "socks5"}},
+		},
+	}
+	// 运行测试（中继未启动会连接失败，但测试重点在于：RelayTestCount 应为 1，即只测试了 socksRelay，不会因为 httpRelay 污染而测试 2 个）
+	resMixed := stMixed.testProxyWithRelayPool("hy2-node", &CProxy{Proxy: hy2Target, Config: map[string]any{"type": "hysteria2"}})
+	if resMixed.RelayTestCount != 1 {
+		t.Errorf("expected RelayTestCount = 1 (only socks5 candidate), got %d", resMixed.RelayTestCount)
+	}
+}
+
+func TestSimplifyRelayError(t *testing.T) {
+	tests := []struct {
+		errText  string
+		expected string
+	}{
+		{"Get \"http://test\": no support", "中继协议不支持UDP"},
+		{"dial tcp: context deadline exceeded", "连接超时"},
+		{"dial tcp 127.0.0.1:80: connect: connection refused", "连接被拒绝"},
+		{"dial tcp: no route to host", "无法路由到主机"},
+		{"proxyconnect tcp: proxy error", "中继代理握手失败"},
+	}
+	for _, tc := range tests {
+		got := simplifyRelayError(fmt.Errorf("%s", tc.errText))
+		if got != tc.expected {
+			t.Errorf("simplifyRelayError(%s) = %s, expected %s", tc.errText, got, tc.expected)
+		}
+	}
+}

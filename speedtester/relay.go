@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -218,6 +219,70 @@ func selectRelaySample(relays []*CProxy, sampleCount int) []*CProxy {
 	return selected
 }
 
+// isUDPOnlyProxy 判断目标节点协议是否必须依赖 UDP 传输 (QUIC 等)
+func isUDPOnlyProxy(proxy *CProxy) bool {
+	var pType string
+	if proxy.Config != nil {
+		if t, ok := proxy.Config["type"].(string); ok {
+			pType = strings.ToLower(t)
+		}
+	}
+	if pType == "" && proxy.Proxy != nil {
+		pType = strings.ToLower(proxy.Type().String())
+	}
+	switch pType {
+	case "hysteria", "hysteria2", "hy", "hy2", "tuic", "wireguard", "wg":
+		return true
+	default:
+		return false
+	}
+}
+
+// relaySupportsUDP 判断中继节点是否支持转发 UDP 数据包
+func relaySupportsUDP(relay *CProxy) bool {
+	var pType string
+	if relay.Config != nil {
+		if t, ok := relay.Config["type"].(string); ok {
+			pType = strings.ToLower(t)
+		}
+	}
+	if pType == "" && relay.Proxy != nil {
+		pType = strings.ToLower(relay.Type().String())
+	}
+	// HTTP / HTTPS 代理协议为标准 CONNECT 隧道，不支持 UDP 转发 (Mihomo 会直接返回 no support)
+	if pType == "http" || pType == "https" {
+		return false
+	}
+	return true
+}
+
+// simplifyRelayError 提取简明易懂的中继失败错误原因
+func simplifyRelayError(err error) string {
+	if err == nil {
+		return ""
+	}
+	errMsg := err.Error()
+	if strings.Contains(errMsg, "no support") {
+		return "中继协议不支持UDP"
+	}
+	if strings.Contains(errMsg, "context deadline exceeded") || strings.Contains(errMsg, "timeout") {
+		return "连接超时"
+	}
+	if strings.Contains(errMsg, "connection refused") {
+		return "连接被拒绝"
+	}
+	if strings.Contains(errMsg, "no route to host") {
+		return "无法路由到主机"
+	}
+	if strings.Contains(errMsg, "proxyconnect tcp") {
+		return "中继代理握手失败"
+	}
+	if len(errMsg) > 60 {
+		return errMsg[:60] + "..."
+	}
+	return errMsg
+}
+
 // testProxyWithRelayPool 使用中继代理池测试目标节点连通性
 func (st *SpeedTester) testProxyWithRelayPool(name string, proxy *CProxy) *Result {
 	result := &Result{
@@ -231,16 +296,35 @@ func (st *SpeedTester) testProxyWithRelayPool(name string, proxy *CProxy) *Resul
 		return result
 	}
 
+	availableRelays := st.relayProxies
+	if isUDPOnlyProxy(proxy) {
+		var udpRelays []*CProxy
+		for _, r := range st.relayProxies {
+			if relaySupportsUDP(r) {
+				udpRelays = append(udpRelays, r)
+			}
+		}
+		if len(udpRelays) == 0 {
+			result.RelayUsed = true
+			result.RelayTestCount = 0
+			result.RelaySuccessCount = 0
+			result.RelayFailureReason = fmt.Sprintf("目标节点为 %s (需UDP)，但中继池无支持UDP的中继(均为HTTP代理)", proxy.Type().String())
+			stdlog.Printf("【中继过滤】节点 [%s] 协议为 %s (需UDP)，但中继池中无支持UDP的中继节点(均为HTTP代理)，跳过测试", name, proxy.Type().String())
+			return result
+		}
+		availableRelays = udpRelays
+	}
+
 	sampleCount := st.config.RelaySampleCount
 	if sampleCount == 0 {
 		sampleCount = 10
 	}
-	// 若显式配置为负数（如 -1），则测试中继池中全部节点
-	if sampleCount < 0 {
-		sampleCount = len(st.relayProxies)
+	// 若显式配置为负数（如 -1），则测试全部可用中继
+	if sampleCount < 0 || sampleCount > len(availableRelays) {
+		sampleCount = len(availableRelays)
 	}
 
-	candidates := selectRelaySample(st.relayProxies, sampleCount)
+	candidates := selectRelaySample(availableRelays, sampleCount)
 
 	requiredSuccess := st.config.RelaySuccessCount
 	if requiredSuccess <= 0 {
@@ -287,6 +371,7 @@ func (st *SpeedTester) testProxyWithRelayPool(name string, proxy *CProxy) *Resul
 		bestRelayed   constant.Proxy
 		bestRelayName string
 		latencies     []time.Duration
+		failReasons   []string
 		wg            sync.WaitGroup
 	)
 
@@ -314,6 +399,10 @@ func (st *SpeedTester) testProxyWithRelayPool(name string, proxy *CProxy) *Resul
 						cancel() // 已达标，立刻取消其余探测任务
 					}
 					mu.Unlock()
+				} else {
+					mu.Lock()
+					failReasons = append(failReasons, fmt.Sprintf("%s: %s", job.relay.Name(), simplifyRelayError(err)))
+					mu.Unlock()
 				}
 			}
 		}()
@@ -329,6 +418,17 @@ func (st *SpeedTester) testProxyWithRelayPool(name string, proxy *CProxy) *Resul
 	// 判断是否满足 N 个中继成功测试
 	if int(atomic.LoadInt32(&successCount)) < requiredSuccess {
 		// 未达到目标中继成功数量或全部中继连接不通，视为失败
+		if len(failReasons) > 0 {
+			sample := failReasons
+			if len(sample) > 3 {
+				sample = sample[:3]
+			}
+			result.RelayFailureReason = strings.Join(sample, "; ")
+		} else {
+			result.RelayFailureReason = "未达到达标中继数"
+		}
+		stdlog.Printf("【中继未达标】节点 [%s] (%d/%d 成功, 测试 %d 个中继), 原因: %s",
+			name, result.RelaySuccessCount, requiredSuccess, len(candidates), result.RelayFailureReason)
 		return result
 	}
 
@@ -431,7 +531,29 @@ func (st *SpeedTester) testSingleRelay(ctx context.Context, targetProxy *CProxy,
 	reqCtx, reqCancel := context.WithTimeout(ctx, timeout)
 	defer reqCancel()
 
-	client := st.createClient(relayedTarget, timeout)
+	tr := &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			host, port, err := net.SplitHostPort(addr)
+			if err != nil {
+				return nil, err
+			}
+			var u16Port uint16
+			if port, err := strconv.ParseUint(port, 10, 16); err == nil {
+				u16Port = uint16(port)
+			}
+			return relayedTarget.DialContext(ctx, &constant.Metadata{
+				Host:    host,
+				DstPort: u16Port,
+			})
+		},
+		DisableKeepAlives: true,
+	}
+	defer tr.CloseIdleConnections()
+
+	client := &http.Client{
+		Timeout:   timeout,
+		Transport: tr,
+	}
 	req, err := http.NewRequestWithContext(reqCtx, "GET", testURL, nil)
 	if err != nil {
 		return 0, nil, err

@@ -542,23 +542,24 @@ type testJob struct {
 }
 
 type Result struct {
-	ProxyName         string         `json:"proxy_name"`
-	ProxyType         string         `json:"proxy_type"`
-	ProxyConfig       map[string]any `json:"proxy_config"`
-	Proxy             constant.Proxy `json:"-"`
-	Latency           time.Duration  `json:"latency"`
-	Jitter            time.Duration  `json:"jitter"`
-	PacketLoss        float64        `json:"packet_loss"`
-	DownloadSize      float64        `json:"download_size"`
-	DownloadTime      time.Duration  `json:"download_time"`
-	DownloadSpeed     float64        `json:"download_speed"`
-	UploadSize        float64        `json:"upload_size"`
-	UploadTime        time.Duration  `json:"upload_time"`
-	UploadSpeed       float64        `json:"upload_speed"`
-	RelayUsed         bool           `json:"relay_used,omitempty"`
-	RelaySuccessCount int            `json:"relay_success_count,omitempty"`
-	RelayTestCount    int            `json:"relay_test_count,omitempty"`
-	BestRelayName     string         `json:"best_relay_name,omitempty"`
+	ProxyName          string         `json:"proxy_name"`
+	ProxyType          string         `json:"proxy_type"`
+	ProxyConfig        map[string]any `json:"proxy_config"`
+	Proxy              constant.Proxy `json:"-"`
+	Latency            time.Duration  `json:"latency"`
+	Jitter             time.Duration  `json:"jitter"`
+	PacketLoss         float64        `json:"packet_loss"`
+	DownloadSize       float64        `json:"download_size"`
+	DownloadTime       time.Duration  `json:"download_time"`
+	DownloadSpeed      float64        `json:"download_speed"`
+	UploadSize         float64        `json:"upload_size"`
+	UploadTime         time.Duration  `json:"upload_time"`
+	UploadSpeed        float64        `json:"upload_speed"`
+	RelayUsed          bool           `json:"relay_used,omitempty"`
+	RelaySuccessCount  int            `json:"relay_success_count,omitempty"`
+	RelayTestCount     int            `json:"relay_test_count,omitempty"`
+	BestRelayName      string         `json:"best_relay_name,omitempty"`
+	RelayFailureReason string         `json:"relay_failure_reason,omitempty"`
 }
 
 func (r *Result) FormatDownloadSpeed() string {
