@@ -615,24 +615,27 @@ func (st *SpeedTester) testProxy(name string, proxy *CProxy) *Result {
 	// 快速连接测试 - 直接请求一个小数据
 	url := fmt.Sprintf("%s/__down?bytes=0", st.config.ServerURL)
 	if st.config.FastMode {
-		url = "https://www.google.com/generate_204"
+		if st.config.ServerURL != "" && st.config.ServerURL != "https://speed.cloudflare.com" {
+			url = st.config.ServerURL
+		} else {
+			url = "https://www.google.com/generate_204"
+		}
 	}
 	start := time.Now()
 	resp, err := client.Get(url)
 	if err != nil {
-		// 🔔 修改点：打印具体的错误原因 (err.Error())
-		//fmt.Printf("\n %s %s %s: %s", name, url, "err connection!", err.Error())
 		// 连接失败，返回全零结果
 		return result
 	}
-	err = resp.Body.Close()
-	if err != nil {
-		return nil
-	}
-	//fmt.Printf("\n %s %s %d", name, url, resp.StatusCode)
-	//5xx代码返回失败
-	if resp.StatusCode/100 == 5 {
-		// HTTP 状态码异常，返回全零结果
+	_ = resp.Body.Close()
+
+	// 验证 HTTP 状态码：
+	// 若为 generate_204 探测端点，必须是 204 或 200；其他端点必须为 2xx 成功状态
+	if strings.Contains(url, "generate_204") {
+		if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
+			return result
+		}
+	} else if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return result
 	}
 	// 记录基本延迟

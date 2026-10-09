@@ -566,7 +566,11 @@ func (st *SpeedTester) testSingleRelay(ctx context.Context, targetProxy *CProxy,
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode/100 == 5 {
+	if strings.Contains(testURL, "generate_204") {
+		if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
+			return 0, nil, fmt.Errorf("HTTP 状态码异常: %d", resp.StatusCode)
+		}
+	} else if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return 0, nil, fmt.Errorf("HTTP 状态码异常: %d", resp.StatusCode)
 	}
 
