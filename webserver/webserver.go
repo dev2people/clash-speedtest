@@ -281,12 +281,14 @@ func (s *Server) performSpeedTest(yamlData []byte, isAppend bool) ([]byte, error
 	timeout := 2 * time.Second
 	relayURL := os.Getenv("RELAY_POOL_URL")
 	if envTimeout := os.Getenv("SPEEDTEST_TIMEOUT"); envTimeout != "" {
+		envTimeout = strings.Trim(strings.TrimSpace(envTimeout), "\"'")
 		if d, err := time.ParseDuration(envTimeout); err == nil {
 			timeout = d
 		} else if sec, err := strconv.Atoi(envTimeout); err == nil {
 			timeout = time.Duration(sec) * time.Second
 		}
 	} else if envTimeout := os.Getenv("TIMEOUT"); envTimeout != "" {
+		envTimeout = strings.Trim(strings.TrimSpace(envTimeout), "\"'")
 		if d, err := time.ParseDuration(envTimeout); err == nil {
 			timeout = d
 		} else if sec, err := strconv.Atoi(envTimeout); err == nil {
@@ -294,6 +296,33 @@ func (s *Server) performSpeedTest(yamlData []byte, isAppend bool) ([]byte, error
 		}
 	} else if strings.TrimSpace(relayURL) != "" {
 		timeout = 5 * time.Second
+	}
+
+	// 最大延迟阈值：支持通过 MAX_LATENCY 或 SPEEDTEST_MAX_LATENCY 环境变量自定义；
+	// 支持携带单位（如 600ms, 1s, 2.5s 等）；若为纯数字，大于100按毫秒(ms)解析，小于等于100按秒(s)解析；默认 5000ms
+	maxLatency := 5000 * time.Millisecond
+	if envMaxLat := os.Getenv("SPEEDTEST_MAX_LATENCY"); envMaxLat != "" {
+		envMaxLat = strings.Trim(strings.TrimSpace(envMaxLat), "\"'")
+		if d, err := time.ParseDuration(envMaxLat); err == nil {
+			maxLatency = d
+		} else if num, err := strconv.Atoi(envMaxLat); err == nil {
+			if num > 100 {
+				maxLatency = time.Duration(num) * time.Millisecond
+			} else {
+				maxLatency = time.Duration(num) * time.Second
+			}
+		}
+	} else if envMaxLat := os.Getenv("MAX_LATENCY"); envMaxLat != "" {
+		envMaxLat = strings.Trim(strings.TrimSpace(envMaxLat), "\"'")
+		if d, err := time.ParseDuration(envMaxLat); err == nil {
+			maxLatency = d
+		} else if num, err := strconv.Atoi(envMaxLat); err == nil {
+			if num > 100 {
+				maxLatency = time.Duration(num) * time.Millisecond
+			} else {
+				maxLatency = time.Duration(num) * time.Second
+			}
+		}
 	}
 
 	serverURL := "https://speed.cloudflare.com"
@@ -311,7 +340,7 @@ func (s *Server) performSpeedTest(yamlData []byte, isAppend bool) ([]byte, error
 		UploadSize:       20 * 1024 * 1024,
 		Timeout:          timeout,
 		Concurrent:       100,
-		MaxLatency:       5000 * time.Millisecond,
+		MaxLatency:       maxLatency,
 		MinDownloadSpeed: 0,
 		MinUploadSpeed:   0,
 		FastMode:         true, // 快速模式，仅测试延迟

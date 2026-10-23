@@ -611,7 +611,14 @@ func (st *SpeedTester) testProxy(name string, proxy *CProxy) *Result {
 	}
 
 	// 尝试创建客户端并发起请求，任何错误都视为失败
-	client := st.createClient(proxy, st.config.MaxLatency)
+	clientTimeout := st.config.MaxLatency
+	if clientTimeout <= 0 {
+		clientTimeout = st.config.Timeout
+	}
+	if clientTimeout <= 0 {
+		clientTimeout = 5 * time.Second
+	}
+	client := st.createClient(proxy, clientTimeout)
 	// 快速连接测试 - 直接请求一个小数据
 	url := fmt.Sprintf("%s/__down?bytes=0", st.config.ServerURL)
 	if st.config.FastMode {

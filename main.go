@@ -75,16 +75,45 @@ func main() {
 	timeoutDuration := *timeout
 	if !isFlagPassed("timeout") {
 		if envTimeout := os.Getenv("SPEEDTEST_TIMEOUT"); envTimeout != "" {
+			envTimeout = strings.Trim(strings.TrimSpace(envTimeout), "\"'")
 			if d, err := time.ParseDuration(envTimeout); err == nil {
 				timeoutDuration = d
 			} else if sec, err := strconv.Atoi(envTimeout); err == nil {
 				timeoutDuration = time.Duration(sec) * time.Second
 			}
 		} else if envTimeout := os.Getenv("TIMEOUT"); envTimeout != "" {
+			envTimeout = strings.Trim(strings.TrimSpace(envTimeout), "\"'")
 			if d, err := time.ParseDuration(envTimeout); err == nil {
 				timeoutDuration = d
 			} else if sec, err := strconv.Atoi(envTimeout); err == nil {
 				timeoutDuration = time.Duration(sec) * time.Second
+			}
+		}
+	}
+
+	maxLatencyDuration := *maxLatency
+	if !isFlagPassed("max-latency") {
+		if envMaxLat := os.Getenv("SPEEDTEST_MAX_LATENCY"); envMaxLat != "" {
+			envMaxLat = strings.Trim(strings.TrimSpace(envMaxLat), "\"'")
+			if d, err := time.ParseDuration(envMaxLat); err == nil {
+				maxLatencyDuration = d
+			} else if num, err := strconv.Atoi(envMaxLat); err == nil {
+				if num > 100 {
+					maxLatencyDuration = time.Duration(num) * time.Millisecond
+				} else {
+					maxLatencyDuration = time.Duration(num) * time.Second
+				}
+			}
+		} else if envMaxLat := os.Getenv("MAX_LATENCY"); envMaxLat != "" {
+			envMaxLat = strings.Trim(strings.TrimSpace(envMaxLat), "\"'")
+			if d, err := time.ParseDuration(envMaxLat); err == nil {
+				maxLatencyDuration = d
+			} else if num, err := strconv.Atoi(envMaxLat); err == nil {
+				if num > 100 {
+					maxLatencyDuration = time.Duration(num) * time.Millisecond
+				} else {
+					maxLatencyDuration = time.Duration(num) * time.Second
+				}
 			}
 		}
 	}
@@ -98,7 +127,7 @@ func main() {
 		UploadSize:        *uploadSize,
 		Timeout:           timeoutDuration,
 		Concurrent:        *concurrent,
-		MaxLatency:        *maxLatency,
+		MaxLatency:        maxLatencyDuration,
 		MinDownloadSpeed:  *minDownloadSpeed * 1024 * 1024,
 		MinUploadSpeed:    *minUploadSpeed * 1024 * 1024,
 		FastMode:          *fastMode,

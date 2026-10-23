@@ -96,3 +96,47 @@ func TestWebServerHealth(t *testing.T) {
 		t.Errorf("expected status ok body, got %s", rec.Body.String())
 	}
 }
+
+func TestWebServerMaxLatencyEnv(t *testing.T) {
+	os.Setenv("AUTH_KEY", "test-auth-key")
+	defer os.Unsetenv("AUTH_KEY")
+
+	server, err := New(18080)
+	if err != nil {
+		t.Fatalf("failed to create server: %v", err)
+	}
+
+	testCases := []struct {
+		envKey string
+		envVal string
+	}{
+		{"MAX_LATENCY", "600ms"},
+		{"MAX_LATENCY", "1s"},
+		{"MAX_LATENCY", "800"},
+		{"SPEEDTEST_MAX_LATENCY", "\"600ms\""},
+		{"SPEEDTEST_MAX_LATENCY", "2"},
+	}
+
+	dummyYAML := `proxies:
+  - name: "node-test"
+    type: socks5
+    server: 127.0.0.1
+    port: 1080
+`
+
+	for _, tc := range testCases {
+		t.Run(tc.envKey+"="+tc.envVal, func(t *testing.T) {
+			os.Setenv(tc.envKey, tc.envVal)
+			defer os.Unsetenv(tc.envKey)
+
+			req := httptest.NewRequest(http.MethodPost, "/speedtest_append_name", bytes.NewBufferString(dummyYAML))
+			req.Header.Set("Authorization", "Bearer test-auth-key")
+			rec := httptest.NewRecorder()
+
+			server.handleSpeedTestAppendName(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Errorf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}

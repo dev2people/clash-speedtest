@@ -63,11 +63,35 @@ go build -o clash-speedtest .
 
 除了命令行参数外，程序还支持通过环境变量进行配置（优先级：命令行参数 > 环境变量 > 默认值）：
 
-| 环境变量 | 适用模式 | 默认值 | 说明 |
-| :--- | :--- | :--- | :--- |
-| **`RELAY_POOL_URL`** | CLI / Web | `""` | 中继代理池地址（远程 URL 或本地路径）。**未设置时为直连模式**；设置后自动开启中继检测模式 |
-| **`RELAY_SUCCESS_COUNT`** | CLI / Web | `1` | 中继检测模式下，每个节点必须成功的最小中继数量（别名 `RELAY_COUNT` 亦可识别） |
-| **`AUTH_KEY`** | Web 模式 | `""` | Web API 身份验证密钥，Web 模式启动时**必须设置**（通过请求头 `Authorization: Bearer <AUTH_KEY>` 校验） |
+| 环境变量 | 适用模式 | 默认值 | 支持单位 / 格式 | 说明 |
+| :--- | :--- | :--- | :--- | :--- |
+| **`MAX_LATENCY`** | CLI / Web | `5000ms` (Web) / `800ms` (CLI) | `600ms`, `1s`, `2.5s`, `800` | **延迟过滤门槛**。超过此延迟的节点将被直接过滤剔除（别名 `SPEEDTEST_MAX_LATENCY`） |
+| **`SPEEDTEST_TIMEOUT`** | CLI / Web | `2s` (直连) / `5s` (中继) | `600ms`, `5s`, `10s`, `5` | **测速通信超时**。控制单次中继探测、下载/上传分块的最大等待时间（别名 `TIMEOUT`） |
+| **`RELAY_POOL_URL`** | CLI / Web | `""` | URL / 本地路径 | 中继代理池地址。**未设置时为直连模式**；设置后自动开启中继检测模式 |
+| **`RELAY_SUCCESS_COUNT`** | CLI / Web | `1` | 整数 | 中继检测模式下，每个节点必须成功的最小中继数量（别名 `RELAY_COUNT` 亦可识别） |
+| **`RELAY_SAMPLE_COUNT`** | CLI / Web | `10` | 整数 (`-1` 为全部) | 中继模式下单节点随机抽样的中继数量（别名 `RELAY_TEST_COUNT` / `RELAY_RANDOM_COUNT`） |
+| **`AUTH_KEY`** | Web 模式 | `""` | 字符串 | Web API 身份验证密钥，Web 模式启动时**必须设置**（通过请求头 `Authorization: Bearer <AUTH_KEY>` 校验） |
+
+---
+
+### `SPEEDTEST_TIMEOUT` 与 `MAX_LATENCY` 的区别与联系
+
+很多用户在配置 Docker 容器或自动化脚本时容易混淆这两个参数，以下是它们的定位与协作关系：
+
+#### 1. 核心区别
+
+| 维度 | `MAX_LATENCY`（最大延迟过滤阈值） | `SPEEDTEST_TIMEOUT`（测速通信超时时间） |
+| :--- | :--- | :--- |
+| **本质定位** | **质量过滤指标（业务裁决）** | **底层通信保护（防挂死机制）** |
+| **核心作用** | 决定节点延迟**多快才算合格**。延迟高于此值的节点直接被丢弃。 | 决定网络请求**最长等待多久**。防止因网络丢包或节点无响应而无限阻塞。 |
+| **主要生效环节** | 1. 节点最终结果过滤阶段（`filterResults`）<br>2. 直连延迟探测时的 HTTP Client 硬超时 | 1. 中继模式下单个中继节点的探测握手限时<br>2. 全量测速模式下的下载/上传分块传输限时 |
+| **典型场景示例** | 设为 `600ms`：测速耗时 850ms 的节点会被**判定不合格并剔除**。 | 设为 `5s`：若节点 5 秒内毫无响应则直接**中断本次网络请求**。 |
+
+#### 2. 两者的内在联系与协同工作机制
+
+* **直连模式下的协同**：直连探测延迟时，HTTP 客户端直接以 `MAX_LATENCY` 作为最长等待时间。如果在该时间内未收到响应，请求直接报超时失败；若收到响应但延迟大于 `MAX_LATENCY`，同样在结果过滤阶段被剔除。
+* **中继模式下的协同**：`SPEEDTEST_TIMEOUT` 负责约束测试端经过多跳中继链时的单次探测超时；而探测成功后汇总出的最优中继延迟，最终由 `MAX_LATENCY` 进行质量把关，超过门槛的节点依然会被剔除。
+* **单位格式完全一致**：两者均全面支持 Go 标准时间单位（如 `600ms`、`1.5s`、`5s`、`1m`，支持带引号），并且兼容纯数字输入（大于 100 自动按毫秒 `ms` 计算，小于等于 100 自动按秒 `s` 计算）。
 
 ---
 
@@ -167,6 +191,26 @@ clash-speedtest -c config.yaml \
 ## Web API 服务模式
 
 提供 HTTP API 接口，适合集成到订阅转换器、定时测速面板或 CI/CD 流水线中。
+
+### Docker / Docker Compose 部署
+
+```yaml
+services:
+  clash-speedtest:
+    restart: unless-stopped
+    image: dev2people/clashsub-tools-clashspeedtest-v0
+    container_name: clash-speedtest
+    ports:
+      - "57890:8080"
+    environment:
+      - TZ=Asia/Shanghai
+      - AUTH_KEY=epYeobK02c6ee9ELuCkPAplZYyqAjOJN
+      - MAX_LATENCY=600ms          # 延迟门槛（如 600ms, 1s），过滤超限节点
+      - SPEEDTEST_TIMEOUT=2s       # 测速/中继超时时间
+      # - RELAY_POOL_URL="https://raw.githubusercontent.com/dev2people/cn-proxy-node-pool/refs/heads/main/filter-data/allnode-url.txt"
+      # - RELAY_SUCCESS_COUNT=1
+      # - RELAY_SAMPLE_COUNT=10
+```
 
 ### 启动服务
 ```bash
