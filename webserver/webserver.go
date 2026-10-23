@@ -445,20 +445,27 @@ func renameNodes(results []*speedtester.Result, tester *speedtester.SpeedTester,
 			semaphore <- struct{}{}
 			defer func() { <-semaphore }()
 
-			location, err := tester.GetIPLocation(r.Proxy)
-			countryCode := "UNKNOWN"
-			if err == nil && location.CountryCode != "" {
-				countryCode = location.CountryCode
+			origName := ""
+			if r.ProxyConfig != nil {
+				if n, ok := r.ProxyConfig["name"].(string); ok {
+					origName = n
+				}
 			}
+			if origName == "" && r.Proxy != nil {
+				origName = r.Proxy.Name()
+			}
+
+			location, err := tester.GetIPLocation(r.Proxy)
+			countryCode, countryName, countryFlag := speedtester.ResolveCountry(location, err, origName)
 
 			proxyConfig := r.ProxyConfig
 
 			// 生成新名称：国家名|国家代码|国旗|延迟|UUID
 			newUUID := uuid.New().String()
 			proxyConfig["name"] = fmt.Sprintf("%s|%s|%s|%dms|%s",
-				getCountryName(countryCode),
+				countryName,
 				countryCode,
-				getCountryFlag(countryCode),
+				countryFlag,
 				r.Latency.Milliseconds(),
 				newUUID)
 		}(result)
@@ -467,7 +474,7 @@ func renameNodes(results []*speedtester.Result, tester *speedtester.SpeedTester,
 	wg.Wait()
 }
 
-// renameNodes 重命名节点
+// renameNodesAppend 重命名节点并保留原名称
 func renameNodesAppend(results []*speedtester.Result, tester *speedtester.SpeedTester, concurrent int) {
 	var wg sync.WaitGroup
 	semaphore := make(chan struct{}, concurrent)
@@ -479,52 +486,30 @@ func renameNodesAppend(results []*speedtester.Result, tester *speedtester.SpeedT
 			semaphore <- struct{}{}
 			defer func() { <-semaphore }()
 
-			location, err := tester.GetIPLocation(r.Proxy)
-			countryCode := "UNKNOWN"
-			if err == nil && location.CountryCode != "" {
-				countryCode = location.CountryCode
+			origName := ""
+			if r.ProxyConfig != nil {
+				if n, ok := r.ProxyConfig["name"].(string); ok {
+					origName = n
+				}
 			}
+			if origName == "" && r.Proxy != nil {
+				origName = r.Proxy.Name()
+			}
+
+			location, err := tester.GetIPLocation(r.Proxy)
+			countryCode, countryName, countryFlag := speedtester.ResolveCountry(location, err, origName)
 
 			proxyConfig := r.ProxyConfig
 
-			// 生成新名称：国家名|国家代码|国旗|延迟|UUID
-			//newUUID := uuid.New().String()
+			// 生成新名称：国家名|国家代码|国旗|延迟|原名称
 			proxyConfig["name"] = fmt.Sprintf("%s|%s|%s|%dms|%s",
-				getCountryName(countryCode),
+				countryName,
 				countryCode,
-				getCountryFlag(countryCode),
+				countryFlag,
 				r.Latency.Milliseconds(),
-				proxyConfig["name"])
+				origName)
 		}(result)
 	}
 
 	wg.Wait()
-}
-
-// getCountryFlag 获取国家旗帜 emoji
-func getCountryFlag(code string) string {
-	flags := map[string]string{
-		"US": "🇺🇸", "CN": "🇨🇳", "GB": "🇬🇧", "UK": "🇬🇧", "JP": "🇯🇵", "DE": "🇩🇪", "FR": "🇫🇷", "RU": "🇷🇺",
-		"SG": "🇸🇬", "HK": "🇭🇰", "TW": "🇹🇼", "KR": "🇰🇷", "CA": "🇨🇦", "AU": "🇦🇺", "NL": "🇳🇱", "IT": "🇮🇹",
-		"ES": "🇪🇸", "SE": "🇸🇪", "NO": "🇳🇴", "DK": "🇩🇰", "FI": "🇫🇮", "CH": "🇨🇭", "AT": "🇦🇹", "BE": "🇧🇪",
-		"UNKNOWN": "🏳️",
-	}
-	if flag, exists := flags[strings.ToUpper(code)]; exists {
-		return flag
-	}
-	return "🏳️"
-}
-
-// getCountryName 获取国家中文名称
-func getCountryName(code string) string {
-	names := map[string]string{
-		"US": "美国", "CN": "中国", "GB": "英国", "UK": "英国", "JP": "日本", "DE": "德国", "FR": "法国", "RU": "俄罗斯",
-		"SG": "新加坡", "HK": "香港", "TW": "台湾", "KR": "韩国", "CA": "加拿大", "AU": "澳大利亚", "NL": "荷兰", "IT": "意大利",
-		"ES": "西班牙", "SE": "瑞典", "NO": "挪威", "DK": "丹麦", "FI": "芬兰", "CH": "瑞士", "AT": "奥地利", "BE": "比利时",
-		"UNKNOWN": "未知",
-	}
-	if name, exists := names[strings.ToUpper(code)]; exists {
-		return name
-	}
-	return "未知"
 }
