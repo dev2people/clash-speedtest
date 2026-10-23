@@ -496,18 +496,21 @@ func renameNodesAppend(results []*speedtester.Result, tester *speedtester.SpeedT
 				origName = r.Proxy.Name()
 			}
 
+			// 安全剥离历史测速前缀，提取节点底名（避免串联测试时前缀无限叠加）
+			baseName := speedtester.CleanBaseNodeName(origName)
+
 			location, err := tester.GetIPLocation(r.Proxy)
-			countryCode, countryName, countryFlag := speedtester.ResolveCountry(location, err, origName)
+			countryCode, countryName, countryFlag := speedtester.ResolveCountry(location, err, baseName)
 
 			proxyConfig := r.ProxyConfig
 
-			// 生成新名称：国家名|国家代码|国旗|延迟|原名称
+			// 生成新名称：国家名|国家代码|国旗|延迟|原底名
 			proxyConfig["name"] = fmt.Sprintf("%s|%s|%s|%dms|%s",
 				countryName,
 				countryCode,
 				countryFlag,
 				r.Latency.Milliseconds(),
-				origName)
+				baseName)
 		}(result)
 	}
 
