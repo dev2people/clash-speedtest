@@ -38,14 +38,17 @@ func TestParseProxyFromURL(t *testing.T) {
 			expectedPwd:  "secret123",
 		},
 		{
-			name:        "http proxy unsupported",
+			name:        "http proxy supported",
 			url:         "http://12.34.56.78:8080",
-			expectError: true,
+			expectError: false,
+			expectedTyp: "http",
 		},
 		{
-			name:        "https proxy unsupported",
+			name:        "https proxy supported",
 			url:         "https://98.76.54.32:8443",
-			expectError: true,
+			expectError: false,
+			expectedTyp: "http",
+			expectedTLS: true,
 		},
 		{
 			name:        "unsupported scheme socks4",
@@ -103,12 +106,12 @@ proxies:
     port: 1080
 `)
 		proxies := parseRelayPoolContent(yamlData)
-		// 仅 socks5 类型的 cn-relay-2 会被保留，http 被过滤
-		if len(proxies) != 1 {
-			t.Fatalf("expected 1 proxy (socks5 only), got %d", len(proxies))
+		// http 和 socks5 均被保留
+		if len(proxies) != 2 {
+			t.Fatalf("expected 2 proxies (http and socks5), got %d", len(proxies))
 		}
-		if proxies[0].Name() != "cn-relay-2" {
-			t.Errorf("expected name cn-relay-2, got %s", proxies[0].Name())
+		if proxies[0].Name() != "cn-relay-1" || proxies[1].Name() != "cn-relay-2" {
+			t.Errorf("unexpected proxy names: %s, %s", proxies[0].Name(), proxies[1].Name())
 		}
 	})
 
@@ -122,9 +125,9 @@ socks4://127.0.0.1:1080
 socks5://user:pass@127.0.0.1:1081
 `)
 		proxies := parseRelayPoolContent(lines)
-		// http 和 socks4 都被忽略，仅 2 个 socks5 会被解析
-		if len(proxies) != 2 {
-			t.Fatalf("expected 2 valid socks5 proxies, got %d", len(proxies))
+		// socks4 被忽略，http 和 2 个 socks5 会被解析（共 3 个）
+		if len(proxies) != 3 {
+			t.Fatalf("expected 3 valid proxies, got %d", len(proxies))
 		}
 	})
 }
@@ -141,8 +144,8 @@ func TestLoadRelayPoolFileAndCache(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadRelayPool failed: %v", err)
 	}
-	if len(proxies) != 2 {
-		t.Fatalf("expected 2 socks5 proxies, got %d", len(proxies))
+	if len(proxies) != 3 {
+		t.Fatalf("expected 3 proxies, got %d", len(proxies))
 	}
 
 	// Test cache hit
@@ -150,8 +153,8 @@ func TestLoadRelayPoolFileAndCache(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadRelayPool from cache failed: %v", err)
 	}
-	if len(cachedProxies) != 2 {
-		t.Fatalf("expected 2 cached proxies, got %d", len(cachedProxies))
+	if len(cachedProxies) != 3 {
+		t.Fatalf("expected 3 cached proxies, got %d", len(cachedProxies))
 	}
 
 	// Test empty URL
@@ -476,7 +479,7 @@ func TestUDPProtocolDetectionAndRelayFiltering(t *testing.T) {
 		}
 	}
 
-	// 3. 当中继池只有 HTTP 代理，且待测节点为 Hysteria2 时，应直接过滤并返回明确原因
+	// 3. 当使用 HTTP 中继测试 Hysteria2 等 UDP 节点时，正常执行探测，因不支持UDP而报错并判定为超时 (Latency = 0)
 	httpRelay, _ := adapter.ParseProxy(map[string]any{"name": "relay-http", "type": "http", "server": "127.0.0.1", "port": 8080})
 	st := &SpeedTester{
 		config: &Config{
@@ -497,17 +500,20 @@ func TestUDPProtocolDetectionAndRelayFiltering(t *testing.T) {
 	})
 	res := st.testProxyWithRelayPool("hy2-node", &CProxy{Proxy: hy2Target, Config: map[string]any{"type": "hysteria2"}})
 	if res.Latency != 0 {
-		t.Fatalf("expected latency 0, got %v", res.Latency)
+		t.Fatalf("expected latency 0 (timeout), got %v", res.Latency)
 	}
 	if !res.RelayUsed {
 		t.Fatalf("expected RelayUsed = true")
 	}
-	if res.RelayFailureReason == "" {
-		t.Fatalf("expected RelayFailureReason to be set when no UDP relays exist")
+	if res.RelayTestCount != 1 {
+		t.Errorf("expected RelayTestCount = 1, got %d", res.RelayTestCount)
 	}
-	t.Logf("Filtered reason: %s", res.RelayFailureReason)
+	if res.RelayFailureReason == "" {
+		t.Fatalf("expected RelayFailureReason to be set when relay fails")
+	}
+	t.Logf("Failed reason: %s", res.RelayFailureReason)
 
-	// 4. 当中继池混有 HTTP 和 SOCKS5 时，Hysteria2 节点只选取 SOCKS5 中继
+	// 4. 当中继池混有 HTTP 和 SOCKS5 时，所有中继均作为候选参与探测
 	socksRelay, _ := adapter.ParseProxy(map[string]any{"name": "relay-socks", "type": "socks5", "server": "127.0.0.1", "port": 1080})
 	stMixed := &SpeedTester{
 		config: &Config{
@@ -519,10 +525,9 @@ func TestUDPProtocolDetectionAndRelayFiltering(t *testing.T) {
 			{Proxy: socksRelay, Config: map[string]any{"name": "relay-socks", "type": "socks5"}},
 		},
 	}
-	// 运行测试（中继未启动会连接失败，但测试重点在于：RelayTestCount 应为 1，即只测试了 socksRelay，不会因为 httpRelay 污染而测试 2 个）
 	resMixed := stMixed.testProxyWithRelayPool("hy2-node", &CProxy{Proxy: hy2Target, Config: map[string]any{"type": "hysteria2"}})
-	if resMixed.RelayTestCount != 1 {
-		t.Errorf("expected RelayTestCount = 1 (only socks5 candidate), got %d", resMixed.RelayTestCount)
+	if resMixed.RelayTestCount != 2 {
+		t.Errorf("expected RelayTestCount = 2 (all candidate relays tested), got %d", resMixed.RelayTestCount)
 	}
 }
 

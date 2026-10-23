@@ -94,10 +94,10 @@ func parseRelayPoolContent(data []byte) []*CProxy {
 	if err := yaml.Unmarshal(data, &rawCfg); err == nil && len(rawCfg.Proxies) > 0 {
 		var list []*CProxy
 		for i, cfg := range rawCfg.Proxies {
-			// 中继节点只使用 socks5，过滤掉无关或不兼容协议
+			// 中继节点支持 socks5 与 http/https 代理协议
 			if t, ok := cfg["type"].(string); ok {
 				t = strings.ToLower(strings.TrimSpace(t))
-				if t != "socks5" && t != "socks" {
+				if t != "socks5" && t != "socks" && t != "http" && t != "https" {
 					continue
 				}
 			} else {
@@ -164,13 +164,15 @@ func parseProxyFromURL(line string, idx int) (map[string]any, error) {
 		return nil, fmt.Errorf("端口无效: %s", portStr)
 	}
 
-	// 中继节点仅支持 socks5
+	// 中继节点支持 socks5 与 http/https
 	var proxyType string
 	switch scheme {
 	case "socks5", "socks":
 		proxyType = "socks5"
+	case "http", "https":
+		proxyType = "http"
 	default:
-		return nil, fmt.Errorf("中继仅支持 socks5 协议，忽略非 socks5: %s", scheme)
+		return nil, fmt.Errorf("中继仅支持 http/https/socks5 协议，忽略非支持协议: %s", scheme)
 	}
 
 	proxyCfg := map[string]any{
@@ -269,7 +271,7 @@ func simplifyRelayError(err error) string {
 		return ""
 	}
 	errMsg := err.Error()
-	if strings.Contains(errMsg, "no support") {
+	if strings.Contains(errMsg, "no support") || strings.Contains(errMsg, "can't support UDP") {
 		return "中继协议不支持UDP"
 	}
 	if strings.Contains(errMsg, "context deadline exceeded") || strings.Contains(errMsg, "timeout") {
@@ -304,23 +306,6 @@ func (st *SpeedTester) testProxyWithRelayPool(name string, proxy *CProxy) *Resul
 	}
 
 	availableRelays := st.relayProxies
-	if isUDPOnlyProxy(proxy) {
-		var udpRelays []*CProxy
-		for _, r := range st.relayProxies {
-			if relaySupportsUDP(r) {
-				udpRelays = append(udpRelays, r)
-			}
-		}
-		if len(udpRelays) == 0 {
-			result.RelayUsed = true
-			result.RelayTestCount = 0
-			result.RelaySuccessCount = 0
-			result.RelayFailureReason = fmt.Sprintf("目标节点为 %s (需UDP)，但中继池无支持UDP的中继(均为HTTP代理)", proxy.Type().String())
-			stdlog.Printf("【中继过滤】节点 [%s] 协议为 %s (需UDP)，但中继池中无支持UDP的中继节点(均为HTTP代理)，跳过测试", name, proxy.Type().String())
-			return result
-		}
-		availableRelays = udpRelays
-	}
 
 	sampleCount := st.config.RelaySampleCount
 	if sampleCount == 0 {
