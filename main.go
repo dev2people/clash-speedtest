@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -26,7 +27,7 @@ var (
 	serverURL         = flag.String("server-url", "https://speed.cloudflare.com", "server url")
 	downloadSize      = flag.Int("download-size", 50*1024*1024, "download size for testing proxies")
 	uploadSize        = flag.Int("upload-size", 20*1024*1024, "upload size for testing proxies")
-	timeout           = flag.Duration("timeout", time.Second*5, "timeout for testing proxies")
+	timeout           = flag.Duration("timeout", time.Second*5, "timeout for testing proxies (also reads SPEEDTEST_TIMEOUT or TIMEOUT env)")
 	concurrent        = flag.Int("concurrent", 4, "download concurrent size")
 	outputPath        = flag.String("output", "", "output config file path")
 	stashCompatible   = flag.Bool("stash-compatible", false, "enable stash compatible mode")
@@ -71,6 +72,23 @@ func main() {
 		log.Fatalln("please specify the configuration file")
 	}
 
+	timeoutDuration := *timeout
+	if !isFlagPassed("timeout") {
+		if envTimeout := os.Getenv("SPEEDTEST_TIMEOUT"); envTimeout != "" {
+			if d, err := time.ParseDuration(envTimeout); err == nil {
+				timeoutDuration = d
+			} else if sec, err := strconv.Atoi(envTimeout); err == nil {
+				timeoutDuration = time.Duration(sec) * time.Second
+			}
+		} else if envTimeout := os.Getenv("TIMEOUT"); envTimeout != "" {
+			if d, err := time.ParseDuration(envTimeout); err == nil {
+				timeoutDuration = d
+			} else if sec, err := strconv.Atoi(envTimeout); err == nil {
+				timeoutDuration = time.Duration(sec) * time.Second
+			}
+		}
+	}
+
 	speedTester := speedtester.New(&speedtester.Config{
 		ConfigPaths:       *configPathsConfig,
 		FilterRegex:       *filterRegexConfig,
@@ -78,7 +96,7 @@ func main() {
 		ServerURL:         *serverURL,
 		DownloadSize:      *downloadSize,
 		UploadSize:        *uploadSize,
-		Timeout:           *timeout,
+		Timeout:           timeoutDuration,
 		Concurrent:        *concurrent,
 		MaxLatency:        *maxLatency,
 		MinDownloadSpeed:  *minDownloadSpeed * 1024 * 1024,
@@ -340,4 +358,14 @@ func generateNodeName(countryCode, flag string, downloadSpeed float64) string {
 
 	speedMBps := downloadSpeed / (1024 * 1024)
 	return fmt.Sprintf("%s %s | ⬇️ %.2f MB/s", flag, strings.ToUpper(countryCode), speedMBps)
+}
+
+func isFlagPassed(name string) bool {
+	found := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			found = true
+		}
+	})
+	return found
 }

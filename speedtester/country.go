@@ -269,6 +269,31 @@ func ExtractCountryFromNodeName(nodeName string) (countryCode, countryName, coun
 	return code, GetCountryName(code), GetCountryFlag(code)
 }
 
+// speedtestPrefixRegex 匹配单层或多层连续的 "国家名|国家代码|国旗|延迟ms|" 前缀
+var speedtestPrefixRegex = regexp.MustCompile(`^(?:[^|]{1,64}\|[A-Za-z]{2,8}\|[^|]{1,16}\|\d+(?:\.\d+)?ms\|)+`)
+
+// CleanBaseNodeName 安全剥离历史测速生成的前缀（例如 "澳大利亚|AU|🇦🇺|161ms|"），提取节点原始底名。
+// 即使发生任何异常或未匹配到前缀，也会安全返回原名称，绝不影响测速流程。
+func CleanBaseNodeName(name string) (cleaned string) {
+	defer func() {
+		if r := recover(); r != nil {
+			cleaned = name
+		}
+	}()
+
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return name
+	}
+
+	result := speedtestPrefixRegex.ReplaceAllString(trimmed, "")
+	if strings.TrimSpace(result) == "" {
+		return name
+	}
+
+	return result
+}
+
 // ResolveCountry 综合 API 定位与节点原始名称解析国家信息
 func ResolveCountry(location *IPLocation, err error, originalNodeName string) (countryCode, countryName, countryFlag string) {
 	if err == nil && location != nil {
@@ -278,8 +303,9 @@ func ResolveCountry(location *IPLocation, err error, originalNodeName string) (c
 		}
 	}
 
-	// API 无法获取或返回未知时，回退从节点原名提取
-	return ExtractCountryFromNodeName(originalNodeName)
+	// API 无法获取或返回未知时，回退从节点原名提取（剥离历史测速前缀以避免污染）
+	cleanedName := CleanBaseNodeName(originalNodeName)
+	return ExtractCountryFromNodeName(cleanedName)
 }
 
 // CountryNames 全球全部 ISO 3166-1 2位国家/地区代码与中文名称完整映射
