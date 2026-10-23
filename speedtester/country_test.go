@@ -138,3 +138,56 @@ func TestResolveCountry(t *testing.T) {
 		t.Errorf("expected UNKNOWN, got %s, %s, %s", code, name, flag)
 	}
 }
+
+func TestCleanBaseNodeName(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "多轮串联测试前缀剥离 (用户真实场景)",
+			input:    "澳大利亚|AU|🇦🇺|161ms|澳大利亚|AU|🇦🇺|4335ms|澳大利亚|AU|🇦🇺|3658ms|澳大利亚|AU|🇦🇺|144ms|澳大利亚|AU|🇦🇺|149ms|澳大利亚|AU|🇦🇺|4336ms|澳大利亚|AU|🇦🇺|152ms|澳大利亚|AU|🇦🇺|4633ms|澳大利亚|AU|🇦🇺|2612ms|🇺🇸US_84|1.7MB/s|M002-260618",
+			expected: "🇺🇸US_84|1.7MB/s|M002-260618",
+		},
+		{
+			name:     "单层前缀剥离",
+			input:    "香港|HK|🇭🇰|150ms|HK-BGP-Node-01",
+			expected: "HK-BGP-Node-01",
+		},
+		{
+			name:     "未知国家前缀剥离",
+			input:    "未知|UNKNOWN|🏳️|2500ms|MyNode",
+			expected: "MyNode",
+		},
+		{
+			name:     "原名无测速前缀时保持不变",
+			input:    "🇺🇸US_84|1.7MB/s|M002-260618",
+			expected: "🇺🇸US_84|1.7MB/s|M002-260618",
+		},
+		{
+			name:     "普通节点名称保持不变",
+			input:    "🇯🇵 东京 01 | 100M",
+			expected: "🇯🇵 东京 01 | 100M",
+		},
+		{
+			name:     "空字符串安全处理",
+			input:    "",
+			expected: "",
+		},
+		{
+			name:     "仅有前缀无底名时安全回退",
+			input:    "日本|JP|🇯🇵|100ms|",
+			expected: "日本|JP|🇯🇵|100ms|",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := CleanBaseNodeName(tc.input)
+			if got != tc.expected {
+				t.Errorf("CleanBaseNodeName(%q) = %q, expected %q", tc.input, got, tc.expected)
+			}
+		})
+	}
+}
