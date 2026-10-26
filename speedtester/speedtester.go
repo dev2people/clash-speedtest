@@ -321,8 +321,8 @@ func (st *SpeedTester) LoadProxies(stashCompatible bool) (map[string]*CProxy, er
 			}
 
 			// 修复 IPv6 映射地址
-			if server, ok := p.Config["server"]; ok {
-				p.Config["server"] = convertMappedIPv6ToIPv4(server.(string))
+			if server, ok := p.Config["server"].(string); ok {
+				p.Config["server"] = convertMappedIPv6ToIPv4(server)
 			}
 
 			// Stash 兼容性检查
