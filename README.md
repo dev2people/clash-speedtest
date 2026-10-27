@@ -71,6 +71,7 @@ go build -o clash-speedtest .
 | **`RELAY_SUCCESS_COUNT`** | CLI / Web | `1` | 整数 | 中继检测模式下，每个节点必须成功的最小中继数量（别名 `RELAY_COUNT` 亦可识别） |
 | **`RELAY_SAMPLE_COUNT`** | CLI / Web | `10` | 整数 (`-1` 为全部) | 中继模式下单节点随机抽样的中继数量（别名 `RELAY_TEST_COUNT` / `RELAY_RANDOM_COUNT`） |
 | **`AUTH_KEY`** | Web 模式 | `""` | 字符串 | Web API 身份验证密钥，Web 模式启动时**必须设置**（通过请求头 `Authorization: Bearer <AUTH_KEY>` 校验） |
+| **`IS_NAME_APPEND`** | Web 模式 | `""` | 字符串 | 是否拼接原始名称 |
 
 ---
 

@@ -507,7 +507,7 @@ func renameNodes(results []*speedtester.Result, tester *speedtester.SpeedTester,
 func renameNodesAppend(results []*speedtester.Result, tester *speedtester.SpeedTester, concurrent int) {
 	var wg sync.WaitGroup
 	semaphore := make(chan struct{}, concurrent)
-
+	IsNameAppendOri := os.Getenv("IS_NAME_APPEND_ORI")
 	for _, result := range results {
 		wg.Add(1)
 		go func(r *speedtester.Result) {
@@ -527,7 +527,9 @@ func renameNodesAppend(results []*speedtester.Result, tester *speedtester.SpeedT
 
 			// 安全剥离历史测速前缀，提取节点底名（避免串联测试时前缀无限叠加）
 			baseName := speedtester.CleanBaseNodeName(origName)
-
+			if IsNameAppendOri == "N" {
+				baseName = ""
+			}
 			location, err := tester.GetIPLocation(r.Proxy)
 			countryCode, countryName, countryFlag := speedtester.ResolveCountry(location, err, baseName)
 
